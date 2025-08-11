@@ -145,7 +145,8 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
                     viewpoint_stack, 
                     batch_size=batch_size,
                     shuffle=opt.loader_shuffle,
-                    num_workers=16,
+                    num_workers=0,
+                    pin_memory=True,
                     collate_fn=list
                 )
                 loader = iter(viewpoint_stack_loader)
