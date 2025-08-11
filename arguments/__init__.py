@@ -54,6 +54,7 @@ class ModelParams(ParamGroup):
         self._white_background = False
         self.data_device = "cuda"
         self.eval = False
+        self.use_extra_cam_info = False
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -66,29 +67,82 @@ class PipelineParams(ParamGroup):
         self.convert_SHs_python = False
         self.compute_cov3D_python = False
         self.debug = False
+        self.load_img_factor = 1.0
+        self.real_dynamic = False
+        self.dataset_shuffle = False
+        self.use_ensure_unique_sample = False
+        self.aug_frist_end = False
+        self.batch_on_t = False
+        self.train_rest_frame = False
+        self.after_second_frame = False
         super().__init__(parser, "Pipeline Parameters")
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         self.iterations = 30_000
-        self.position_lr_init = 0.00016
+        self.position_lr_init =  0.00016
         self.position_lr_final = 0.0000016
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 30_000
         self.feature_lr = 0.0025
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
-        self.rotation_lr = 0.001
+        self.rotation_lr = 0.005
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
         self.densification_interval = 100
+        self.prune_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
-        self.train_rest_frame = False
-        self.after_second_frame = False
+        self.min_opacity = 0.005
+        self.batch_size=1
+        self.knn_loss = False
+        self.scale_loss = False
+        self.dataloader=False
+        self.no_deform_from_iter=0
+        self.factor_t = False
+        self.offset_t = False
+        self.factor_t_value = 0.5
+        self.offset_t_value = 0.5
+        self.loader_shuffle = False
+        self.detach_base_iter = 1000000
+        self.opacity_mask = False
+        self.normalize_timestamp = True
+        self.mse_loss = False
         super().__init__(parser, "Optimization Parameters")
+        
+class FlowParams(ParamGroup):
+    def __init__(self, parser):
+        self.xyz_traj_feat_dim = 16
+        self.xyz_trajectory_type = 'poly'
+        self.rot_traj_feat_dim = 20
+        self.rot_trajectory_type = 'fft'
+        self.scale_traj_feat_dim = 20
+        self.scale_trajectory_type = 'none'
+        self.opc_traj_feat_dim = 20
+        self.opc_trajectory_type = 'none'
+        self.feature_traj_feat_dim = 2
+        self.feature_trajectory_type = 'none'
+        self.feature_dc_trajectory_type = 'none'
+        self.traj_init = 'zero'
+        self.poly_base_factor = 1.0
+        self.Hz_base_factor = 1.0
+        self.normliaze = False
+        self.get_smooth_loss=False
+        self.use_interpolation=False
+        self.random_noise=False
+        self.get_moving_loss=False
+        self.masked=False
+        self.moving_scale = 1.0
+        #lr
+        # self.xyz_lr = 0.0001
+        # self.rot_lr = 0.0001
+        # self.scale_lr = 0.0001
+        # self.opc_lr = 0.0001
+        # self.feature_lr = 0.0001
+        super().__init__(parser, "Gaussion Flow Parameters")
 
 def get_combined_args(parser : ArgumentParser):
     cmdlne_string = sys.argv[1:]

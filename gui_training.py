@@ -14,6 +14,7 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
 import taichi as ti
+from taichi.math import vec3, ivec2
 
 import os
 import torch
@@ -21,13 +22,19 @@ from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
-from scene import Scene, GaussianModel
+from scene import Scene, GaussianModel, DynamicScene
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+
+import nerfvis
+from utils.sh_utils import SH2RGB
+from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
+
+import datetime
 
 def prepare_output(args):    
     if not args.model_path:
@@ -58,12 +65,44 @@ def write_buffer(
             final_pixel[i, j][p] = x[p, j_rev, i]
 
 class GUI:
-    def __init__(self, dataset, opt, pipe):
+    def __init__(self, dataset, opt, pipe, dynamic=False):
 
         device = "cuda:0"
+        self.dynamic = dynamic
         prepare_output(dataset)
-        self.gaussians = GaussianModel(dataset.sh_degree)
-        self.scene = Scene(dataset, self.gaussians)
+        self.gaussians = GaussianModel(
+            dataset.sh_degree,
+            max_steps=opt.iterations+1,
+            xyz_traj_feat_dim=3,
+            xyz_trajectory_type='poly',
+            rot_traj_feat_dim=4,
+            rot_trajectory_type='fft',
+            feature_traj_feat_dim=2,
+            feature_trajectory_type='fft',
+            traj_init='zero',
+            max_frames=100,
+        )
+        self.render_gaussians = GaussianModel(
+            dataset.sh_degree,
+            max_steps=opt.iterations+1,
+            xyz_traj_feat_dim=3,
+            xyz_trajectory_type='poly',
+            rot_traj_feat_dim=4,
+            rot_trajectory_type='fft',
+            feature_traj_feat_dim=2,
+            feature_trajectory_type='fft',
+            traj_init='zero',
+            max_frames=100,
+        )
+        if dynamic:
+            self.scene = DynamicScene(
+                dataset, 
+                self.gaussians, 
+                only_frist=False,
+            )
+        else:
+            self.scene = Scene(dataset, self.gaussians)
+            
         self.gaussians.training_setup(opt)
         self.dataset = dataset
         self.pipe = pipe
@@ -72,9 +111,14 @@ class GUI:
         self.bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
         self.background = torch.tensor(self.bg_color, dtype=torch.float32, device="cuda")
 
-        viewpoint_stack = self.scene.getTrainCameras().copy()
-        self.viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-        self.viewpoint_stack = self.scene.getTrainCameras().copy()
+        if dynamic:
+            self.viewpoint_stack = self.scene.getTrainCameras().copy()[0]
+            self.time_view_stack = None
+        else:
+            self.viewpoint_stack = self.scene.getTrainCameras().copy()
+            
+        self.viewpoint_cam = self.viewpoint_stack.pop(randint(0, len(self.viewpoint_stack)-1))
+        # import pdb; pdb.set_trace()
         # placeholders
         self.dt = 0
         self.mean_samples = 0
@@ -87,18 +131,56 @@ class GUI:
         self.W=int(self.viewpoint_cam.image_width)
     
         self.camera = ti.ui.Camera()
-        self.camera.position(0.66, -0.71, 2)
-        self.camera.lookat(1, -0.73, 1)
+        self.camera.position(0, 0, 2)
+        self.camera.lookat(0, 0, 1)
         self.camera.up(0, 1, 0)
+        self.camera.fov(
+            np.rad2deg(self.viewpoint_cam.FoVx)
+        )
         
         self.iteration = 0
         
+        R_np = []
+        T_np = []
+        w2c_mats = []
+        # import pdb; pdb.set_trace()
+        for ii in range(len(self.viewpoint_stack)):
+            cam_i = self.viewpoint_stack[ii]
+            R_np.append(cam_i.R)
+            T_np.append(cam_i.T)
+            W2C = getWorld2View2(cam_i.R, cam_i.T)
+            C2W = np.linalg.inv(W2C)
+            w2c_mats.append(C2W)
+        w2c_mats = np.stack(w2c_mats, axis=0)
+
+        self.cam_T = w2c_mats[:, :3, -1]
+        self.cam_pos = ti.Vector.field(
+            3, dtype=ti.f32, 
+            shape=len(self.viewpoint_stack)
+        )
+        for i in tqdm(range(len(self.viewpoint_stack))):
+            self.cam_pos[i] = vec3(
+                self.cam_T[i, 0],
+                self.cam_T[i, 1],
+                self.cam_T[i, 2],
+            )
+            
+    def update_render_gaussion(self):
+        self.render_gaussians._xyz = self.gaussians._xyz.detach()
+        self.render_gaussians._rotation = self.gaussians._rotation.detach()
+        self.render_gaussians._xyz_poly_params = self.gaussians._xyz_poly_params.detach()
+        self.render_gaussians._rot_poly_params = self.gaussians._rot_poly_params.detach()
+        self.render_gaussians._scaling = self.gaussians._scaling.detach()
+        self.render_gaussians._opacity = self.gaussians._opacity.detach()
+        self.render_gaussians._features_dc = self.gaussians._features_dc.detach()
+        self.render_gaussians._features_rest = self.gaussians._features_rest.detach()
+            
     @torch.no_grad()
     def render_frame(self):
         t = time.time()
         # print(cam.pose)
         with torch.no_grad():
-            render_pkg = render(self.viewpoint_cam, self.gaussians, self.pipe, self.background)
+            render_pkg = render(self.viewpoint_cam, self.render_gaussians, self.pipe, self.background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
         self.dt = time.time()-t
@@ -106,8 +188,6 @@ class GUI:
         return image
 
     def render_gui(self):
-
-        ti.init(arch=ti.cuda, offline_cache=True)
 
         W, H = self.W, self.H
         print("W:", type(W))
@@ -120,12 +200,105 @@ class GUI:
         cur_cam_id = 0
         start_time = time.time()
         eta_times = 0
-        num_pos = self.gaussians.get_xyz.shape[0]
+        
+        scene = ti.ui.Scene()
+        pos_lines = ti.Vector.field(3, dtype=ti.f32, shape=(6, ))
+        pos_lines_colors = ti.Vector.field(3, dtype=ti.f32, shape=(6, ))
+        pos_lines[0] = vec3(0, 0, 0)
+        pos_lines_colors[0] = vec3(1, 0, 0)
+        pos_lines[1] = vec3(1, 0, 0)
+        pos_lines_colors[1] = vec3(1, 0, 0)
+        
+        pos_lines[2] = vec3(0, 0, 0)
+        pos_lines_colors[2] = vec3(0, 1, 0)
+        pos_lines[3] = vec3(0, 1, 0)
+        pos_lines_colors[3] = vec3(0, 1, 0)
+        
+        pos_lines[4] = vec3(0, 0, 0)
+        pos_lines_colors[4] = vec3(0, 0, 1)
+        pos_lines[5] = vec3(0, 0, 1)
+        pos_lines_colors[5] = vec3(0, 0, 1)
+        
+        pos_vertex = ti.Vector.field(3, dtype=ti.f32, shape=(8, ))
+        pos_indice = ti.Vector.field(2, dtype=ti.i32, shape=(12, ))
+        vertex = [
+            [1, 1, 0],
+            [1, 1, 1],
+            [0, 1, 1],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 0],
+        ]
+        for i in range(7):
+            pos_vertex[i] = vec3(*vertex[i])
+        indice = [
+            [0, 6],
+            [0, 5],
+            [0, 1],
+            [4, 1],
+            [4, 5],
+            [4, 3],
+            [2, 6],
+            [2, 3],
+            [2, 1],
+            [7, 6],
+            [7, 5],
+            [7, 3],
+        ]
+        for i in range(9):
+            pos_indice[i] = ivec2(*indice[i])
+            
+        playing = False
+        first_play = False
+            
+        current_frame = 0
+        last_frame = 0
+        duration_interval = 50
+        time_max = self.gaussians.max_frames
+        start = datetime.datetime.now()
+        if self.opt.real_dynamic:
+            with torch.no_grad():
+                self.render_gaussians.set_timestamp(current_frame)
 
+        num_pos = self.gaussians.get_xyz.shape[0]
         while window.running:
             self.camera.track_user_inputs(window, movement_speed=0.03, hold_key=ti.ui.RMB)
+            scene.set_camera(self.camera)
+            scene.ambient_light((0.8, 0.8, 0.8))
 
             with gui.sub_window("Options", 0.01, 0.01, 0.23, 0.6) as w:
+                
+                if gui.button('play'):
+                    playing = True
+                if gui.button('pause'):
+                    playing = False
+                    
+                update_frame = False
+                if playing:
+                    end = datetime.datetime.now()
+                    duration = (end - start).total_seconds() * 1000  # Convert to milliseconds
+
+                    if duration >= duration_interval:  # 25 fps
+                        if not first_play:
+                            current_frame += 1
+                            if current_frame > time_max:
+                                current_frame = 0
+                            update_frame = True
+                            # print("Frame:", current_frame)  # Uncomment to print the frame number
+
+                        else:
+                            first_play = False
+
+                        start = datetime.datetime.now()
+                else:
+                    first_play = True
+                    
+                current_frame = gui.slider_int("time", current_frame, minimum=0, maximum=time_max)
+                if current_frame != last_frame:
+                    update_frame = True
+                    last_frame = current_frame
 
                 if self.iteration > 50000:
                     training = False
@@ -150,9 +323,9 @@ class GUI:
                 look_z = gui.slider_float("look_z", self.camera.curr_lookat[2], minimum=-5, maximum=5)
                 self.camera.lookat(look_x, look_y, look_z)
                 
-                up_x = gui.slider_float("up_x", self.camera.curr_up[0], minimum=-1, maximum=1)
-                up_y = gui.slider_float("up_y", self.camera.curr_up[1], minimum=-1, maximum=1)
-                up_z = gui.slider_float("up_z", self.camera.curr_up[2], minimum=-1, maximum=1)
+                up_x = gui.slider_int("up_x", self.camera.curr_up[0], minimum=-1, maximum=1)
+                up_y = gui.slider_int("up_y", self.camera.curr_up[1], minimum=-1, maximum=1)
+                up_z = gui.slider_int("up_z", self.camera.curr_up[2], minimum=-1, maximum=1)
                 self.camera.up(up_x, up_y, up_z)       
                 
                 # cam_pose = self.cam.pose
@@ -185,21 +358,40 @@ class GUI:
                 )
                 
             if training:
-                cur_cam_id = self.training_step()
+                if self.opt.real_dynamic:
+                    self.training_step_dynamic()
+                else:
+                    cur_cam_id = self.training_step()
                 
-            R = self.camera.get_view_matrix()[:3, :3]
-            t = np.array([
-                -self.camera.curr_position[0], 
-                self.camera.curr_position[1],
-                self.camera.curr_position[2],
-            ])
+            Rt = self.camera.get_view_matrix()
+            R = Rt[:3, :3].T
+            # R *= np.array([[1, 1, 1]])
+            Rt[3, :3] *= np.array([1, -1, -1])
+            # t = np.array([
+            #     -self.camera.curr_position[0], 
+            #     self.camera.curr_position[1],
+            #     self.camera.curr_position[2],
+            # ])
+            # import pdb; pdb.set_trace()
             # self.viewpoint_cam.new_cam(self.cam.rot, self.cam.center)
-            self.viewpoint_cam.new_cam(R, t)
+            self.viewpoint_cam.new_cam(R[:, [0 ,2, 1]], Rt[3, :3])
             # print("frame id: ", current_frame)
+            
+            if update_frame:
+                
+                with torch.no_grad():
+                    self.update_render_gaussion()
+                    self.render_gaussians.set_timestamp(current_frame)
+            
             render_buffer = self.render_frame()
             # print("render_buffer shape: ", render_buffer.shape)
             write_buffer(True, W, H, render_buffer, final_pixel)
             canvas.set_image(final_pixel)
+            
+            # scene.particles(self.cam_pos, color=(1, 1, 1), radius=0.01)
+            scene.lines(pos_vertex, indices=pos_indice, color=(0.28, 0.68, 0.99), width=5.0)
+            scene.lines(pos_lines, per_vertex_color=pos_lines_colors, width=5.0)
+            canvas.scene(scene)
             window.show()
             
             
@@ -246,6 +438,92 @@ class GUI:
                 self.gaussians.optimizer.zero_grad(set_to_none = True)
                 
         return cam_id
+    
+    def training_step_dynamic(self):
+        # optimization
+        self.gaussians.update_learning_rate(self.iteration)
+        self.iteration += 1
+        
+        # Every 1000 its we increase the levels of SH up to a maximum degree
+        if self.iteration % 1000 == 0:
+            self.gaussians.oneupSHdegree()
+        # Pick a random Camera
+        if self.opt.real_dynamic:
+            if not self.time_view_stack or len(self.time_view_stack) == 0:
+                self.time_view_stack = self.scene.getTrainCameras(deep_copy=True)
+            sample_time = randint(0, len(self.time_view_stack)-1)
+            # if len(time_view_stack[sample_time]) == 0:
+            #     import pdb; pdb.set_trace()
+            if self.opt.use_ensure_unique_sample:
+                viewpoint_cam = self.time_view_stack[sample_time].pop(randint(0, len(self.time_view_stack[sample_time])-1))
+                
+                if len(self.time_view_stack[sample_time]) == 0:
+                    self.time_view_stack.pop(sample_time)
+            else:
+                
+                if self.opt.aug_frist_end and (self.iteration % 1000):
+                    viewpoint_cam = self.time_view_stack[0][randint(0, len(self.time_view_stack[0])-1)]
+                else:
+                    viewpoint_cam = self.time_view_stack[sample_time][randint(0, len(self.time_view_stack[sample_time])-1)]
+                    
+        else:
+            if not viewpoint_stack:
+                viewpoint_stack = self.scene.getTrainCameras().copy()
+            viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+            
+        time_sample = viewpoint_cam.timestamp
+        arr_lossess = {}
+        if self.iteration > 0:
+            arr_lossess = self.gaussians.set_timestamp(
+                time_sample, 
+                training=True, 
+                training_step=self.iteration, 
+                get_smooth_loss=False,
+                use_interpolation=False,
+                random_noise=True,
+            )
+        else:
+            self.gaussians.set_no_deform()
+            
+        render_pkg = render(viewpoint_cam, self.gaussians, pipe, self.background)
+        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        
+        # Loss
+        gt_image = viewpoint_cam.original_image.cuda()
+        Ll1 = l1_loss(image, gt_image)
+        loss = (1.0 - self.opt.lambda_dssim) * Ll1 + self.opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        
+        # get the extra losses from the gaussians
+        for arr_loss_key in arr_lossess:
+            loss += 0.1*arr_lossess[arr_loss_key]
+        
+        loss.backward()
+        
+        with torch.no_grad():                
+            if (self.iteration < self.opt.densify_until_iter):
+                
+                # Keep track of max radii in image-space for pruning
+                self.gaussians.max_radii2D[visibility_filter] = torch.max(self.gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                self.gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                if self.iteration > 5000:
+                    densification_interval = 1000
+                    opc_reset_interval = 1000000
+                    densify_grad_threshold = self.opt.densify_grad_threshold
+                else:
+                    densification_interval = self.opt.densification_interval
+                    opc_reset_interval = self.opt.opacity_reset_interval
+                    densify_grad_threshold = self.opt.densify_grad_threshold
+                if self.iteration > self.opt.densify_from_iter and self.iteration % densification_interval == 0:
+                    size_threshold = 20 if self.iteration > 3000 else None
+                    self.gaussians.densify_and_prune(densify_grad_threshold, self.opt.min_opacity, self.scene.cameras_extent, size_threshold)
+                
+                if self.iteration % opc_reset_interval == 0 or (dataset.white_background and self.iteration == self.opt.densify_from_iter):
+                    self.gaussians.reset_opacity()
+
+            # Optimizer step
+            if self.iteration < self.opt.iterations:
+                self.gaussians.optimizer.step()
+                self.gaussians.optimizer.zero_grad(set_to_none = True)
         
         
 
@@ -263,8 +541,11 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[2_000, 10_000, 30_000])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--dynamic", action='store_true', default=False)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
+    
+    ti.init(arch=ti.cuda)
     
     print("Optimizing " + args.model_path)
 
@@ -278,7 +559,7 @@ if __name__ == "__main__":
     dataset = lp.extract(args)
     opt = op.extract(args)
     pipe = pp.extract(args)
-    gui = GUI(dataset, opt, pipe)
+    gui = GUI(dataset, opt, pipe, args.dynamic)
     gui.render_gui()
     # args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from
     

@@ -6,3 +6,10 @@ diff_rasterization/diff_rast.egg-info
 diff_rasterization/dist
 tensorboard_3d
 screenshots
+imgui.ini
+output_back
+*.mp4
+*.zip
+submodules
+SIBR_viewers
+flame_*

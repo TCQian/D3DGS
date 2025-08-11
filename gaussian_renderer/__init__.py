@@ -11,11 +11,11 @@
 
 import torch
 import math
-from .diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, render_xyz=False):
     """
     Render the scene. 
     
@@ -40,11 +40,12 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         tanfovy=tanfovy,
         bg=bg_color,
         scale_modifier=scaling_modifier,
-        viewmatrix=viewpoint_camera.world_view_transform,
-        projmatrix=viewpoint_camera.full_proj_transform,
+        viewmatrix=viewpoint_camera.world_view_transform.cuda(),
+        projmatrix=viewpoint_camera.full_proj_transform.cuda(),
         sh_degree=pc.active_sh_degree,
-        campos=viewpoint_camera.camera_center,
+        campos=viewpoint_camera.camera_center.cuda(),
         prefiltered=False,
+        # computer_xyz=render_xyz,
         debug=pipe.debug
     )
 
@@ -58,12 +59,21 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # scaling / rotation by the rasterizer.
     scales = None
     rotations = None
+    rotations2 = None
     cov3D_precomp = None
     if pipe.compute_cov3D_python:
         cov3D_precomp = pc.get_covariance(scaling_modifier)
     else:
         scales = pc.get_scaling
         rotations = pc.get_rotation
+        # rotations2 = pc.get_rotation2
+        
+    # trbfscale = pc._time_scale_params
+    # trbfdistanceoffset = pc.timestamp_final
+    # trbfdistance =  trbfdistanceoffset / torch.exp(trbfscale) 
+    # trbfoutput = torch.exp(-1*trbfdistance.pow(2))
+    
+    # opacity = opacity * trbfoutput 
 
     # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
     # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
@@ -90,11 +100,22 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         opacities = opacity,
         scales = scales,
         rotations = rotations,
+        # rotations2 = rotations2,
         cov3D_precomp = cov3D_precomp)
 
+    # import pdb; pdb.set_trace()
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     return {"render": rendered_image,
+            # "num_rendered": num_rendered,
+            "opacity": opacity,
+            # "depth": depth,
+            "render_xyz": render_xyz,
             "viewspace_points": screenspace_points,
             "visibility_filter" : radii > 0,
-            "radii": radii}
+            "radii": radii,
+            "xyz": means3D,
+            "color": shs,
+            "rot": rotations,
+            "scales": scales,
+            "xy": means2D,}

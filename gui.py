@@ -21,13 +21,13 @@ from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
-from scene import Scene, GaussianModel
+from scene import Scene, GaussianModel, DynamicScene
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
-from arguments import ModelParams, PipelineParams, OptimizationParams
+from arguments import ModelParams, PipelineParams, OptimizationParams, FlowParams
 
 import datetime
 
@@ -52,102 +52,63 @@ def write_buffer(
         for p in ti.static(range(3)):
             final_pixel[i, j][p] = x[p, j_rev, i]
 
-import warnings; warnings.filterwarnings("ignore")
-class Camera:
-    """
-    Camera class from: https://github.com/kwea123/ngp_pl/blob/master/show_gui.py
-    """
-    def __init__(self, r, pose=None, center=None):
-        self.radius = r
-        if center is not None:
-            self.center = center
-        else:
-            self.center = np.zeros(3)
-        self.rot = np.eye(3)
-        # self.center = pose_np[20][:3, 3]
-        # self.rot = pose_np[50][:3, :3]
-        if pose is not None:
-            self.res_defalut = pose[0]
-        self.rotate_speed = 0.8
-
-        self.inner_rot = np.eye(3)
-
-    def reset(self, pose=None, aabb=None):
-        self.rot = np.eye(3)
-        self.inner_rot = np.eye(3)
-        self.center = np.zeros(3)
-        self.radius = 1.5
-        if pose is not None:
-            self.rot = pose[:3, :3]
-
-    @property
-    def pose(self):
-        # first move camera to radius
-        res = np.eye(4)
-        res[2, 3] += self.radius
-        # rotate
-        rot = np.eye(4)
-        rot[:3, :3] = self.rot
-        res = rot @ res
-        # inner rotate
-        rot = np.eye(4)
-        rot[:3, :3] = self.inner_rot
-        res = res @ rot
-        # translate
-        res[:3, 3] += self.center
-        # return res
-
-        # print("res_defalut: ", self.res_defalut)
-        # print("res: ", res)
-        # return self.res_defalut
-        return res
-
-    def orbit(self, dx, dy):
-        rotvec_x = self.rot[:, 1] * np.radians(-100*self.rotate_speed * dx)
-        rotvec_y = self.rot[:, 0] * np.radians(-100*self.rotate_speed * dy)
-        self.rot = R.from_rotvec(rotvec_y).as_matrix() @ \
-                   R.from_rotvec(rotvec_x).as_matrix() @ \
-                   self.rot
-
-    def inner_orbit(self, dx, dy):
-        rotvec_x = self.inner_rot[:, 1] * np.radians(-100*self.rotate_speed * dx)
-        rotvec_y = self.inner_rot[:, 0] * np.radians(-100*self.rotate_speed * dy)
-        self.inner_rot = R.from_rotvec(rotvec_y).as_matrix() @ \
-                         R.from_rotvec(rotvec_x).as_matrix() @ \
-                         self.inner_rot
-
-    def scale(self, delta):
-        self.radius *= 1.1 ** (-delta)
-
-    def pan(self, dx, dy, dz=0):
-        self.center += 1e-4 * self.rot @ np.array([dx, dy, dz])
-
-
 class GUI:
-    def __init__(self, dataset, opt, pipe, checkpoint):
+    def __init__(self, dataset : ModelParams, opt, flow_args, pipe : PipelineParams, checkpoint, dynamic=False):
 
         device = "cuda:0"
+        self.dynamic = dynamic
 
         self.gaussians_list = []
-        self.current_gaussians = GaussianModel(dataset.sh_degree)
-        self.scene = Scene(dataset, self.current_gaussians)
+        self.current_gaussians = GaussianModel(
+            dataset.sh_degree,
+            max_steps=opt.iterations+1,
+            xyz_traj_feat_dim=flow_args.xyz_traj_feat_dim,
+            xyz_trajectory_type=flow_args.xyz_trajectory_type,
+            rot_traj_feat_dim=flow_args.rot_traj_feat_dim,
+            rot_trajectory_type=flow_args.rot_trajectory_type,
+            scale_traj_feat_dim=flow_args.scale_traj_feat_dim,
+            scale_trajectory_type=flow_args.scale_trajectory_type,
+            opc_traj_feat_dim=flow_args.opc_traj_feat_dim,
+            opc_trajectory_type=flow_args.opc_trajectory_type,
+            feature_traj_feat_dim=flow_args.feature_traj_feat_dim,
+            feature_trajectory_type=flow_args.feature_trajectory_type,
+            feature_dc_trajectory_type=flow_args.feature_dc_trajectory_type,
+            traj_init=flow_args.traj_init,
+            poly_base_factor=flow_args.poly_base_factor,
+            Hz_base_factor=flow_args.Hz_base_factor,
+            normliaze=flow_args.normliaze,
+            factor_t=opt.factor_t,
+        )
+        if pipe.real_dynamic:
+            self.scene = DynamicScene(
+                dataset, 
+                self.current_gaussians, 
+                only_frist=True,
+            )
+        else:
+            self.scene = Scene(
+                dataset, 
+                self.current_gaussians, 
+                shuffle=False,
+                load_img_factor=pipe.load_img_factor
+            )
         self.pipe = pipe
-        # self.current_gaussians.training_setup(opt)
-        # (model_params, first_iter) = torch.load(checkpoint)
-        # self.current_gaussians.restore(model_params, opt)
-        path_str = dataset.model_path
-        gaussians_paths_root = path_str.replace("/0", "")
-        spath = f"{gaussians_paths_root}/1/point_cloud/iteration_2000/point_cloud.ply"
-        self.current_gaussians.load_ply_for_rendering(spath)
-        self.current_gaussians.to("cuda")
-        for idx in tqdm(range(1, 300)):
-            if idx == 0:
-                spath = f"{gaussians_paths_root}/{idx}/point_cloud/iteration_10000/point_cloud.ply"
-            else:
-                spath = f"{gaussians_paths_root}/{idx}/point_cloud/iteration_2000/point_cloud.ply"
-            gg = GaussianModel(dataset.sh_degree)
-            gg.load_ply_for_rendering(spath, only_xyz=True)
-            self.gaussians_list.append(gg)
+        self.current_gaussians.training_setup(opt, flow_args)
+        (model_params, first_iter) = torch.load(checkpoint)
+        self.current_gaussians.restore(model_params, opt, flow_args)
+        # path_str = dataset.model_path
+        # gaussians_paths_root = path_str.replace("/0", "")
+        # spath = f"{gaussians_paths_root}/1/point_cloud/iteration_2000/point_cloud.ply"
+        # self.current_gaussians.load_ply_for_rendering(spath)
+        # self.current_gaussians.to("cuda")
+        # for idx in tqdm(range(1, 300)):
+        #     if idx == 0:
+        #         spath = f"{gaussians_paths_root}/{idx}/point_cloud/iteration_10000/point_cloud.ply"
+        #     else:
+        #         spath = f"{gaussians_paths_root}/{idx}/point_cloud/iteration_2000/point_cloud.ply"
+        #     gg = GaussianModel(dataset.sh_degree)
+        #     gg.load_ply_for_rendering(spath, only_xyz=True)
+        #     self.gaussians_list.append(gg)
             
         # import pdb; pdb.set_trace()
         # self.gaussians.training_setup(opt)
@@ -158,7 +119,15 @@ class GUI:
         self.bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
         self.background = torch.tensor(self.bg_color, dtype=torch.float32, device="cuda")
 
-        self.viewpoint_stack = self.scene.getTrainCameras().copy()
+        if dynamic:
+            get_cam_stack = self.scene.getTrainCameras().copy()
+            if isinstance(get_cam_stack[0], list):
+                self.viewpoint_stack = get_cam_stack[0]
+            else:
+                self.viewpoint_stack = get_cam_stack
+        else:
+            self.viewpoint_stack = self.scene.getTrainCameras().copy()
+            
         self.viewpoint_cam = self.viewpoint_stack.pop(randint(0, len(self.viewpoint_stack)-1))
         # placeholders
         self.dt = 0
@@ -170,8 +139,6 @@ class GUI:
         self.iter_end = torch.cuda.Event(enable_timing = True)
         self.H=int(self.viewpoint_cam.image_height)
         self.W=int(self.viewpoint_cam.image_width)
-        
-        self.cam = Camera(2.5)
 
         self.camera = ti.ui.Camera()
         self.camera.position(1, 1, 1)
@@ -192,7 +159,7 @@ class GUI:
 
     def render_gui(self):
 
-        ti.init(arch=ti.cuda, offline_cache=True)
+        ti.init(arch=ti.cuda, offline_cache=False)
 
         W, H = self.W, self.H
         print("W:", type(W))
@@ -204,14 +171,24 @@ class GUI:
         playing = False
         first_play = False
 
-        current_frame = 0
+        current_frame = 14
+        last_frame = 14
+        time_max = self.current_gaussians.max_frames
+        if type(time_max) == float:
+            time_max = 1000
+            self.current_gaussians.normalize_timestamp = True
+            self.current_gaussians.max_frames = time_max
+        duration_interval = 50
         start = datetime.datetime.now()
+        
+        self.current_gaussians.set_timestamp(current_frame)
+        
+        num_pos = self.current_gaussians.get_xyz.shape[0]
 
         while window.running:
             self.camera.track_user_inputs(window, movement_speed=0.03, hold_key=ti.ui.RMB)
 
             with gui.sub_window("Options", 0.01, 0.01, 0.25, 0.28) as w:
-                self.cam.rotate_speed = w.slider_float('rotate speed', self.cam.rotate_speed, 0.1, 1.)
 
                 if gui.button('play'):
                     playing = True
@@ -223,11 +200,11 @@ class GUI:
                     end = datetime.datetime.now()
                     duration = (end - start).total_seconds() * 1000  # Convert to milliseconds
 
-                    if duration >= 40:  # 25 fps
+                    if duration >= duration_interval:  # 25 fps
                         if not first_play:
                             current_frame += 1
-                            if current_frame > 298:
-                                current_frame = 0
+                            if current_frame > time_max:
+                                current_frame = 14
                             update_frame = True
                             # print("Frame:", current_frame)  # Uncomment to print the frame number
 
@@ -237,13 +214,29 @@ class GUI:
                         start = datetime.datetime.now()
                 else:
                     first_play = True
+                current_frame = gui.slider_int("time", current_frame, minimum=0, maximum=time_max)
+                if current_frame != last_frame:
+                    update_frame = True
+                    last_frame = current_frame
+                    
+                pos_x = gui.slider_float("pos_x", self.camera.curr_position[0], minimum=-5, maximum=5)
+                pos_y = gui.slider_float("pos_y", self.camera.curr_position[1], minimum=-5, maximum=5)
+                pos_z = gui.slider_float("pos_z", self.camera.curr_position[2], minimum=-5, maximum=5)
+                self.camera.position(pos_x, pos_y, pos_z)
+                
+                look_x = gui.slider_float("look_x", self.camera.curr_lookat[0], minimum=-5, maximum=5)
+                look_y = gui.slider_float("look_y", self.camera.curr_lookat[1], minimum=-5, maximum=5)
+                look_z = gui.slider_float("look_z", self.camera.curr_lookat[2], minimum=-5, maximum=5)
+                self.camera.lookat(look_x, look_y, look_z)
+                
+                up_x = gui.slider_int("up_x", self.camera.curr_up[0], minimum=-1, maximum=1)
+                up_y = gui.slider_int("up_y", self.camera.curr_up[1], minimum=-1, maximum=1)
+                up_z = gui.slider_int("up_z", self.camera.curr_up[2], minimum=-1, maximum=1)
+                self.camera.up(up_x, up_y, up_z)     
                         
-
-                self.img_mode = w.checkbox("show depth", self.img_mode)
-
-
                 # cam_pose = self.cam.pose
-                w.text(f'samples per rays: {self.mean_samples} s/r')
+                w.text(f'render size: {self.viewpoint_cam.image_width} x {self.viewpoint_cam.image_height}')
+                w.text(f'number of gaussians: {num_pos}')
                 w.text(f'render times: {1000*self.dt:.2f} ms')
                 w.text(f'c2w:')
                 w.text(f'{self.viewpoint_cam.R[0]}')
@@ -253,18 +246,34 @@ class GUI:
                 w.text(
                     f'-{self.camera.curr_position}'
                 )
-            R = self.camera.get_view_matrix()[:3, :3]
-            t = np.array([
-                -self.camera.curr_position[0], 
-                self.camera.curr_position[1],
-                self.camera.curr_position[2],
-            ])
+                w.text('lookat:')
+                w.text(
+                    f'-{self.camera.curr_lookat}'
+                )
+                w.text('up:')
+                w.text(
+                    f'-{self.camera.curr_up}'
+                )
+            Rt = self.camera.get_view_matrix().T
+            # import pdb; pdb.set_trace()
+            R = Rt[:3, :3]
+            T = Rt[:3, 3]
+            T *= np.array([1, -1, -1])
+            # Rt[:3, 3] *= np.array([1, 1, -1])
+            # t = np.array([
+            #     -self.camera.curr_position[0], 
+            #     self.camera.curr_position[1],
+            #     self.camera.curr_position[2],a
+            # ])
             # self.viewpoint_cam.new_cam(self.cam.rot, self.cam.center)
-            self.viewpoint_cam.new_cam(R, t)
+            self.viewpoint_cam.new_cam(R[:, [0 ,2, 1]], T)
             # print("frame id: ", current_frame)
             if update_frame:
-                self.current_gaussians._xyz[...] = self.gaussians_list[current_frame]._xyz
-                self.current_gaussians._rotation[...] = self.gaussians_list[current_frame]._rotation
+                if self.dynamic:
+                    self.current_gaussians.set_timestamp(current_frame)
+                else:
+                    self.current_gaussians._xyz[...] = self.gaussians_list[current_frame]._xyz
+                    self.current_gaussians._rotation[...] = self.gaussians_list[current_frame]._rotation
             render_buffer = self.render_frame()
             # print("render_buffer shape: ", render_buffer.shape)
             write_buffer(True, W, H, render_buffer, final_pixel)
@@ -277,6 +286,7 @@ if __name__ == "__main__":
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
+    ff = FlowParams(parser)
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
@@ -285,10 +295,18 @@ if __name__ == "__main__":
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[2_000, 10_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[2_000, 10_000, 30_000])
+    parser.add_argument("--configs", type=str, default = "")
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--dynamic", action='store_true', default=False)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
-    
+
+    if args.configs:
+        import mmcv
+        from utils.params_utils import merge_hparams
+        config = mmcv.Config.fromfile(args.configs)
+        args = merge_hparams(args, config)
+        
     print("Optimizing " + args.model_path)
 
     # Initialize system state (RNG)
@@ -301,7 +319,8 @@ if __name__ == "__main__":
     dataset = lp.extract(args)
     opt = op.extract(args)
     pipe = pp.extract(args)
-    gui = GUI(dataset, opt, pipe, args.start_checkpoint)
+    flowm = ff.extract(args)
+    gui = GUI(dataset, opt, flowm, pipe, args.start_checkpoint, args.dynamic)
     gui.render_gui()
     # args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from
     
