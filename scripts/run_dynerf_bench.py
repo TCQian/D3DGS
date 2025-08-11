@@ -42,15 +42,15 @@ def run_excu(name_prefix, path):
     safe_run(command)
     
 hyper_list = [
-    {
-        # "path": "/home/loyot/workspace/SSD_1T/Datasets/NeRF/3d_vedio_datasets/flame_steak/images_split/0",
-        "path": "/data1/loyot/datasets/flame_steak",
-        "name": "flame_steak",
-    },
     # {
-    #     "path": "/home/loyot/workspace/SSD_1T/Datasets/NeRF/3d_vedio_datasets/cut_roasted_beef/images_split/0",
-    #     "name": "cut_roasted_beef",
+    #     # "path": "/home/loyot/workspace/SSD_1T/Datasets/NeRF/3d_vedio_datasets/flame_steak/images_split/0",
+    #     "path": "/data1/loyot/datasets/flame_steak",
+    #     "name": "flame_steak",
     # },
+    {
+        "path": "./data/dynerf/cut_roasted_beef/",
+        "name": "cut_roasted_beef",
+    },
     # {
     #     "path": "/home/loyot/workspace/SSD_1T/Datasets/NeRF/3d_vedio_datasets/cook_spinach/images_split/0",
     #     "name": "cook_spinach",
