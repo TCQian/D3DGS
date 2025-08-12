@@ -34,7 +34,7 @@ pipe = pp.extract(args)
 gaussians = GaussianModel(dataset.sh_degree)
 scene = Scene(dataset, gaussians)
 
-(model_params, first_iter) = torch.load(args.start_checkpoint)
+(model_params, first_iter) = torch.load(args.start_checkpoint, weights_only=False)
 gaussians.restore(model_params, opt)
 
 viewpoint_stack = scene.getTrainCameras().copy()

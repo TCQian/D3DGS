@@ -7,7 +7,7 @@ from datetime import datetime
 timestamp = time.time()
 formatted_timestamp = datetime.fromtimestamp(timestamp).strftime('%Y%m%d-%H%M%S')
 
-selected_gpu = '4'
+selected_gpu = '0'
 my_env = os.environ.copy()
 my_env["CUDA_VISIBLE_DEVICES"] = selected_gpu
 

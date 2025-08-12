@@ -157,7 +157,7 @@ def render_sets(dataset : ModelParams, opt, flow_args, iteration : int, pipeline
         scene = Scene(dataset, gaussians, shuffle=False, load_img_factor=pipeline.load_img_factor)
         
         gaussians.training_setup(opt, flow_args)
-        (model_params, first_iter) = torch.load(os.path.join(dataset.model_path, f"{ckpt_name}"))
+        (model_params, first_iter) = torch.load(os.path.join(dataset.model_path, f"{ckpt_name}"), weights_only=False)
         gaussians.restore(model_params, opt, flow_args)
 
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]

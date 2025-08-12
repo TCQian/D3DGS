@@ -93,7 +93,7 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
     frame_id = scene.model_path.split("/")[-1]
     model_root = scene.model_path.replace('/'+frame_id, '/')
     if checkpoint:
-        (model_params, first_iter) = torch.load(checkpoint)
+        (model_params, first_iter) = torch.load(checkpoint, weights_only=False)
         gaussians.restore(model_params, opt, flow_args)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
