@@ -45,7 +45,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     
     gaussian_collect = defaultdict(list)
     
-    import ipdb; ipdb.set_trace()
+    # import ipdb; ipdb.set_trace()
     # views = views[::2]
     # import pdb;pdb.set_trace()
     if len(views) > 300:
