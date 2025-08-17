@@ -10,4 +10,4 @@
 source ~/.bashrc
 conda activate GaussianFlow
 
-python ./scripts/run_dynerf_bench.py
+python ./scripts/run_cmu_bench.py
