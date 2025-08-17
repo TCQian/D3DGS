@@ -11,6 +11,7 @@
 
 import os
 import sys
+import torch
 from PIL import Image
 from typing import NamedTuple
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
@@ -576,6 +577,57 @@ def readdynerfInfo(datadir,use_bg_points,eval):
                            )
     return scene_info
 
+def readPanopticmeta(datadir: str, json_path: str):
+    # --- 1) load just the JSON to compute scene radius ---
+    meta_file = os.path.join(datadir, json_path)
+    with open(meta_file, "r") as f:
+        meta = json.load(f)
+
+    # meta['w2c'][0] is a list of world-to-camera 4×4 matrices for t=0
+    w2c0 = np.array(meta["w2c"][0], dtype=np.float32)       # (N_cams, 4, 4)
+    inv_w2c0 = np.linalg.inv(w2c0)                          # (N_cams, 4, 4)
+    centers = inv_w2c0[:, :3, 3]                            # (N_cams, 3)
+    mean_center = centers.mean(axis=0, keepdims=True)       # (1, 3)
+    scene_radius = 1.1 * np.max(np.linalg.norm(centers - mean_center, axis=-1))
+
+    # --- 2) build on-the-fly dataset ---
+    from scene.cmu_dataset import PanopticDataset
+    dataset = PanopticDataset(datadir, json_path)
+
+    # --- 3) return dataset instead of full cam_infos list ---
+    return dataset, dataset.max_time, scene_radius
+
+def readPanopticSportsinfos(datadir,use_bg_points,eval):
+    train_cam_infos, max_time, scene_radius = readPanopticmeta(datadir, "train_meta.json")
+    test_cam_infos,_, _ = readPanopticmeta(datadir, "test_meta.json")
+    nerf_normalization = {
+        "radius":scene_radius,
+        "translate":torch.tensor([0,0,0])
+    }
+
+    ply_path = os.path.join(datadir, "pointd3D.ply")
+
+        # Since this data set has no colmap data, we start with random points
+    plz_path = os.path.join(datadir, "init_pt_cld.npz")
+    data = np.load(plz_path)["data"]
+    xyz = data[:,:3]
+    rgb = data[:,3:6]
+    num_pts = xyz.shape[0]
+    pcd = BasicPointCloud(points=xyz, colors=rgb, normals=np.ones((num_pts, 3)))
+    storePly(ply_path, xyz, rgb)
+    # pcd = fetchPly(ply_path)
+    # breakpoint()
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           video_cameras=test_cam_infos,
+                           train_cameras_0=None,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path,
+                           maxtime=max_time,
+                           )
+    return scene_info
+
 def readdnaInfo(datadir, anno_smc, factor=1.0):
     # loading all the data follow hexplane format
     ply_path = os.path.join(datadir, "points3d.ply")
@@ -640,5 +692,6 @@ sceneLoadTypeCallbacks = {
     "Blender" : readNerfSyntheticInfo,
     "Hyper": readHyperDataInfos,
     "dynerf" : readdynerfInfo,
+    "PanopticSports" : readPanopticSportsinfos,
     "DNA" : readdnaInfo,
 }

@@ -68,6 +68,10 @@ class Scene:
             radius_extent = 2.
             scene_info = sceneLoadTypeCallbacks["dynerf"](args.source_path, args.white_background, args.eval)
             self.is_dynerf = True
+        elif os.path.exists(os.path.join(args.source_path,"train_meta.json")):
+            print("Found train_meta.json file, assuming PanopticSports data set!")
+            scene_info = sceneLoadTypeCallbacks["PanopticSports"](args.source_path, args.white_background, args.eval)
+            self.is_panoptic = True
         elif os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval)
             self.is_colmap = True
@@ -104,7 +108,7 @@ class Scene:
                 print("Loading Test Cameras")
                 self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
                 # self.gaussians.factor_t = True
-        elif self.is_dynerf or self.is_dna:
+        elif self.is_dynerf or self.is_dna or self.is_panoptic:
             self.train_cameras = FourDGSdataset(scene_info.train_cameras, args)
             self.train_cameras_0 = FourDGSdataset(scene_info.train_cameras_0, args)
             self.test_cameras = FourDGSdataset(scene_info.test_cameras, args)
