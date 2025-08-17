@@ -7,6 +7,7 @@ import torchvision.transforms as T
 from PIL import Image
 from torch.utils.data import Dataset
 
+from scene.dataset_readers import CameraInfo
 from utils.graphics_utils import focal2fov
 class PanopticDataset(Dataset):
     def __init__(self, datadir: str, json_path: str):
@@ -69,4 +70,7 @@ class PanopticDataset(Dataset):
         w2c = e["w2c"]
         R = np.transpose(w2c[:3, :3])
         T = w2c[:3, 3]
-        return img, (R, T), e['time']
+        
+        return CameraInfo(uid=idx, R=R, T=T, FovY=self.FovY, FovX=self.FovX, image=img,
+                                image_path=img_path, image_name=e["fn"], width=self.w, height=self.h,
+                                timestamp = e["time"])
