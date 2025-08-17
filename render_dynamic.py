@@ -39,9 +39,6 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 
     makedirs(render_path, exist_ok=True)
     makedirs(gts_path, exist_ok=True)
-    render_images = []
-    gt_list = []
-    render_list = []
     
     gaussian_collect = defaultdict(list)
     
@@ -50,9 +47,10 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     # import pdb;pdb.set_trace()
     if len(views) > 300:
         views = views[:300]
+
+    total_time = 0
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        if idx == 0:
-            time1 = time()
+        time1 = time()
         #     view_fix = view
         gaussians.set_timestamp(view.timestamp)
         render_pkg = render(view, gaussians, pipeline, background)
@@ -87,38 +85,34 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
             # )
 
         rendering = render_pkg["render"]
-        # torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
-        render_images.append(to8b(rendering).transpose(1,2,0))
-        # print(to8b(rendering).shape)
-        render_list.append(rendering)
+        total_time += time.time() - time1
+        
+        torchvision.utils.save_image(to8b(rendering).transpose(1,2,0), os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
+        # render_list.append(rendering)
         if name in ["train", "test"]:
             gt = view.original_image[0:3, :, :]
-            # torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
-            gt_list.append(gt)
-    time2=time()
-    print("FPS:",(len(views)-1)/(time2-time1))
-    count = 0
-    print("writing training images.")
-    if len(gt_list) != 0:
-        for image in tqdm(gt_list):
-            torchvision.utils.save_image(image, os.path.join(gts_path, '{0:05d}'.format(count) + ".png"))
-            count+=1
-    count = 0
-    print("writing rendering images.")
-    if len(render_list) != 0:
-        for image in tqdm(render_list):
-            torchvision.utils.save_image(image, os.path.join(render_path, '{0:05d}'.format(count) + ".png"))
-            count +=1
+            torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+            # gt_list.append(gt)
+    print("FPS:",(len(views)-1)/total_time)
     
-    imageio.mimwrite(
-        os.path.join(
-            model_path, 
-            name, 
-            "ours_{}".format(iteration), 
-            'video_rgb.mp4'
-        ), 
-        render_images, fps=25, quality=8
-    )
+    # Read images from render_path and create video
+    render_images = []
+    for idx in range(len(views)):
+        img_path = os.path.join(render_path, '{0:05d}.png'.format(idx))
+        if os.path.exists(img_path):
+            img = imageio.imread(img_path)
+            render_images.append(img)
+    
+    if render_images:
+        imageio.mimwrite(
+            os.path.join(
+                model_path, 
+                name, 
+                "ours_{}".format(iteration), 
+                'video_rgb.mp4'
+            ), 
+            render_images, fps=25, quality=8
+        )
     if save_npz:
         np.savez(        
             os.path.join(

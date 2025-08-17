@@ -139,7 +139,7 @@ class Scene:
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
 
     def getTrainCameras(self, scale=1.0):
-        if self.is_dynerf or self.is_dna:
+        if self.is_dynerf or self.is_dna or self.is_panoptic:
             return self.train_cameras
         else:
             return self.train_cameras[scale]
@@ -148,13 +148,13 @@ class Scene:
         return self.train_cameras_0
 
     def getTestCameras(self, scale=1.0):
-        if self.is_dynerf or self.is_dna:
+        if self.is_dynerf or self.is_dna or self.is_panoptic:
             return self.test_cameras
         else:
             return self.test_cameras[scale]
     
     def getVideoCameras(self, scale=1.0):
-        if self.is_dynerf or self.is_dna or self.is_hyper or self.is_blender:
+        if self.is_dynerf or self.is_dna or self.is_hyper or self.is_blender or self.is_panoptic:
             return self.video_camera
         else:
             return self.video_camera[scale]
