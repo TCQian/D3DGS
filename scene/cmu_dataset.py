@@ -7,10 +7,7 @@ import torchvision.transforms as T
 from PIL import Image
 from torch.utils.data import Dataset
 
-from scene.dataset_readers import setup_camera
 from utils.graphics_utils import focal2fov
-
-
 class PanopticDataset(Dataset):
     def __init__(self, datadir: str, json_path: str):
         # --- load metadata once ---
@@ -26,7 +23,7 @@ class PanopticDataset(Dataset):
 
         # flatten (time × camera) into a single list
         for t_idx in range(self.max_time):
-            time = t_idx / self.max_time
+            time = t_idx
             Ks = meta["k"][t_idx]  # list of 3×3 intrinsics
             W2Cs = meta["w2c"][t_idx]
             FNs = meta["fn"][t_idx]
@@ -69,14 +66,7 @@ class PanopticDataset(Dataset):
         img = Image.open(img_path).convert("RGB")
         img = self.transform(img)
 
-        # build camera; pass K and w2c positionally, not as 'K='
-        cam = setup_camera(
-            self.w,  # image width
-            self.h,  # image height
-            e["K"],  # your 3×3 intrinsics matrix
-            e["w2c"],  # world-to-camera 4×4
-            near=0.01,
-            far=100.0,
-        )
-
-        return {"camera": cam, "image": img, "time": e["time"], "cam_id": e["cam_id"]}
+        w2c = e["w2c"]
+        R = np.transpose(w2c[:3, :3])
+        T = w2c[:3, 3]
+        return img, (R, T), e['time']
