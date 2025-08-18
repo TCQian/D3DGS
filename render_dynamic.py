@@ -90,9 +90,8 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         imageio.imwrite(os.path.join(render_path, f"{idx:05d}.png"),
                 to8b(rendering.detach().cpu()).transpose(1, 2, 0))
         # render_list.append(rendering)
-        if name in ["train", "test"]:
-            gt = view.original_image[0:3, :, :]
-            imageio.imwrite(os.path.join(gts_path, f"{idx:05d}.png"), gt)
+        gt = view.original_image[0:3, :, :]
+        imageio.imwrite(os.path.join(gts_path, f"{idx:05d}.png"), gt)
             # gt_list.append(gt)
     print("FPS:",(len(views)-1)/total_time)
     
