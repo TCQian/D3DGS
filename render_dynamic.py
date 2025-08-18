@@ -85,13 +85,13 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
             # )
 
         rendering = render_pkg["render"]
-        total_time += time.time() - time1
-        
-        torchvision.utils.save_image(to8b(rendering).transpose(1,2,0), os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
+        total_time += time() - time1
+        imageio.imwrite(os.path.join(render_path, f"{idx:05d}.png"),
+                to8b(rendering.detach().cpu()).transpose(1, 2, 0))
         # render_list.append(rendering)
         if name in ["train", "test"]:
             gt = view.original_image[0:3, :, :]
-            torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+            imageio.imwrite(os.path.join(gts_path, f"{idx:05d}.png"), gt)
             # gt_list.append(gt)
     print("FPS:",(len(views)-1)/total_time)
     
