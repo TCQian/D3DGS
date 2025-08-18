@@ -45,8 +45,9 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     # import ipdb; ipdb.set_trace()
     # views = views[::2]
     # import pdb;pdb.set_trace()
-    if len(views) > 300:
-        views = views[:300]
+    max_frames = gaussians.max_frames
+    if max_frames:
+        views = views[:max_frames]
 
     total_time = 0
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
