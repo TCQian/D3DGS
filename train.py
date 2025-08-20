@@ -569,9 +569,9 @@ if __name__ == "__main__":
         max_iter, 
         pp.extract(args), 
         skip_train=True,
-        skip_test=True,
-        skip_video=False,
-        save_npz=True,
+        skip_test=False,
+        skip_video=True,
+        save_npz=False,
         ckpt_name=f"chkpnt{max_iter}.pth",
     )
 

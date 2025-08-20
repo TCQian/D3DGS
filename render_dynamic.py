@@ -45,14 +45,19 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     # import ipdb; ipdb.set_trace()
     # views = views[::2]
     # import pdb;pdb.set_trace()
-    max_frames = gaussians.max_frames
-    if max_frames:
-        views = views[:max_frames]
+    if name == "video":
+        max_frames = gaussians.max_frames
+        if max_frames:
+            views = views[:max_frames]
+            print(f"Rendering {max_frames} frames for {name}")
+    else:
+        max_frames = len(views)
+        print(f"Rendering {max_frames} frames for {name}")
 
     total_time = 0
-    for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
+    for idx in tqdm(range(max_frames), desc="Rendering progress"):
         time1 = time()
-        #     view_fix = view
+        view = views[idx]
         gaussians.set_timestamp(view.timestamp)
         render_pkg = render(view, gaussians, pipeline, background)
 
