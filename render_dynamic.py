@@ -96,7 +96,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
                 to8b(rendering.detach().cpu()).transpose(1, 2, 0))
         # render_list.append(rendering)
         gt = view.original_image[0:3, :, :]
-        imageio.imwrite(os.path.join(gts_path, f"{idx:05d}.png"), gt)
+        torchvision.utils.save_image(gt, os.path.join(gts_path, f"{idx:05d}.png"))
             # gt_list.append(gt)
     print("FPS:",(len(views)-1)/total_time)
     

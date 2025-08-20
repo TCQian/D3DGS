@@ -533,7 +533,7 @@ if __name__ == "__main__":
         # copy config to output
         import shutil
         # get file name of the config
-        os.makedirs(args.model_path)
+        os.makedirs(args.model_path, exist_ok=True)
         config_filename = args.configs.split('/')[-1]
         shutil.copyfile(
             args.configs, 
