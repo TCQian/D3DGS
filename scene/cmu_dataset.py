@@ -1,5 +1,4 @@
 import json
-import math
 import os
 
 import numpy as np
@@ -7,7 +6,7 @@ import torchvision.transforms as T
 from PIL import Image
 from torch.utils.data import Dataset
 
-from scene.dataset_readers import CameraInfo
+from scene.dataset_readers import CameraInfoExtra
 from utils.graphics_utils import focal2fov
 class PanopticDataset(Dataset):
     def __init__(self, datadir: str, json_path: str):
@@ -35,6 +34,10 @@ class PanopticDataset(Dataset):
                 K = np.array(K_list, dtype=np.float32).reshape(3, 3)
                 fx = float(K[0, 0])
                 fy = float(K[1, 1])
+                cx = float(K[0, 2])
+                cy = float(K[1, 2])
+                fovx = focal2fov(fx, self.w)
+                fovy = focal2fov(fy, self.h)
 
                 self.entries.append(
                     {
@@ -42,16 +45,15 @@ class PanopticDataset(Dataset):
                         "K": K,
                         "fx": fx,
                         "fy": fy,
+                        "cx": cx,
+                        "cy": cy,
+                        "FovX": fovx,
+                        "FovY": fovy,
                         "w2c": np.array(w2c_list, dtype=np.float32),
                         "fn": fn,
                         "cam_id": cid,
                     }
                 )
-
-        # compute FOVs from fx, fy
-        # note: focal2fov(pixels, focal) -> radians
-        self.FovX = focal2fov(self.w, np.mean([e["fx"] for e in self.entries]))
-        self.FovY = focal2fov(self.h, np.mean([e["fy"] for e in self.entries]))
 
         # simple PIL→Tensor loader
         self.transform = T.ToTensor()
@@ -71,6 +73,20 @@ class PanopticDataset(Dataset):
         R = np.transpose(w2c[:3, :3])
         T = w2c[:3, 3]
         
-        return CameraInfo(uid=idx, R=R, T=T, FovY=self.FovY, FovX=self.FovX, image=img,
-                                image_path=img_path, image_name=e["fn"], width=self.w, height=self.h,
-                                timestamp = e["time"])
+        return CameraInfoExtra(
+            uid=idx,
+            R=R,
+            T=T,
+            FovY=e["FovY"],
+            FovX=e["FovX"],
+            image=img,
+            image_path=img_path,
+            image_name=e["fn"],
+            width=self.w,
+            height=self.h,
+            timestamp=e["time"],
+            focal_length_x=e["fx"],
+            focal_length_y=e["fy"],
+            cx=e["cx"],
+            cy=e["cy"],
+        )
