@@ -59,7 +59,8 @@ class CameraInfoExtra(NamedTuple):
     width: int
     height: int
     timestamp: int
-    focal_length: float
+    focal_length_x: float
+    focal_length_y: float
     cx: float
     cy: float
 
@@ -119,7 +120,10 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, suppress=Fa
 
         if intr.model=="SIMPLE_PINHOLE":
             focal_length_x = intr.params[0]
-            FovY = focal2fov(focal_length_x, height)
+            focal_length_y = intr.params[0]
+            cx = intr.params[1]
+            cy = intr.params[2]
+            FovY = focal2fov(focal_length_y, height)
             FovX = focal2fov(focal_length_x, width)
         elif intr.model=="PINHOLE":
             focal_length_x = intr.params[0]
@@ -137,11 +141,12 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, suppress=Fa
         image = image_path
 
         cam_info = CameraInfoExtra(
-            uid=uid, R=R, T=T, 
+            uid=uid, R=R, T=T,
             FovY=FovY, FovX=FovX, image=image,
-            image_path=image_path, image_name=image_name, 
+            image_path=image_path, image_name=image_name,
             width=width, height=height, timestamp=timestamp,
-            focal_length=focal_length_x,
+            focal_length_x=focal_length_x,
+            focal_length_y=focal_length_y,
             cx=cx, cy=cy,
         )
         cam_infos.append(cam_info)
