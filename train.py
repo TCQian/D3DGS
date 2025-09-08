@@ -186,10 +186,11 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
             
             if scene.is_panoptic:
                 time_sample = viewpoint_cam["time"]
-                gt_image = viewpoint_cam.original_image.cuda()
+                gt_image  = viewpoint_cam['image'].cuda()
             else:
                 time_sample = viewpoint_cam.timestamp
-                gt_image  = viewpoint_cam['image'].cuda()
+                gt_image = viewpoint_cam.original_image.cuda()
+
             gt_images.append(gt_image)
 
             # print(f"time_sample: {time_sample}")
@@ -419,11 +420,19 @@ def training_report_real_dynamic(tb_writer, iteration, Ll1, loss, l1_loss, reg_l
                 lpips_test = 0.0
                 for idx, viewpoint in enumerate(config['cameras']):
                     # import pdb; pdb.set_trace()
-                    scene.gaussians.set_timestamp(viewpoint.timestamp)
+                    if scene.is_panoptic:
+                        time_sample = viewpoint["time"]
+                        gt_image  = viewpoint['image'].cuda()
+                        image_name = idx
+                    else:
+                        time_sample = viewpoint.timestamp
+                        gt_image = viewpoint.original_image.cuda()
+                        image_name = viewpoint.image_name
+                    scene.gaussians.set_timestamp(time_sample)
                     image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
-                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                    tb_writer.add_images(config['name'] + "_view_{}_frame_{}/render".format(viewpoint.image_name, viewpoint.timestamp), image[None], global_step=iteration)
-                    tb_writer.add_images(config['name'] + "_view_{}_frame_{}/ground_truth".format(viewpoint.image_name, viewpoint.timestamp), gt_image[None], global_step=iteration)
+                    gt_image = torch.clamp(gt_image, 0.0, 1.0)
+                    tb_writer.add_images(config['name'] + "_view_{}_frame_{}/render".format(image_name, time_sample), image[None], global_step=iteration)
+                    tb_writer.add_images(config['name'] + "_view_{}_frame_{}/ground_truth".format(image_name, time_sample), gt_image[None], global_step=iteration)
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
                     ssims_test += ms_ssim(
