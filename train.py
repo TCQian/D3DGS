@@ -140,13 +140,13 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
             else:
                 viewpoint_stack = scene.getTrainCameras()
             batch_size = opt.batch_size
-            if opt.dataloader and not scene.is_panoptic:
+            if opt.dataloader:
                 viewpoint_stack_loader = DataLoader(
                     viewpoint_stack, 
                     batch_size=batch_size,
                     shuffle=opt.loader_shuffle,
                     num_workers=0,
-                    pin_memory=True,
+                    # pin_memory=True,
                     collate_fn=list
                 )
                 loader = iter(viewpoint_stack_loader)
@@ -154,7 +154,7 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
                 viewpoint_stack = [i for i in viewpoint_stack]
                 temp_list = deepcopy(viewpoint_stack)
                 viewpoint_stack = temp_list.copy()
-        if opt.dataloader and not scene.is_panoptic:
+        if opt.dataloader:
             try:
                 viewpoint_cams = next(loader)
             except StopIteration:
@@ -186,8 +186,12 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
             
             if scene.is_panoptic:
                 time_sample = viewpoint_cam["time"]
+                gt_image = viewpoint_cam.original_image.cuda()
             else:
                 time_sample = viewpoint_cam.timestamp
+                gt_image  = viewpoint_cam['image'].cuda()
+            gt_images.append(gt_image)
+
             # print(f"time_sample: {time_sample}")
             if iteration > opt.no_deform_from_iter:
                 gaussians.need_deformed = True
@@ -212,7 +216,6 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
             viewspace_points.append(render_pkg["viewspace_points"])
             visibility_filters.append(render_pkg["visibility_filter"].unsqueeze(0))
             radiis.append(render_pkg["radii"].unsqueeze(0))
-            gt_images.append(viewpoint_cam.original_image.cuda())
             if opt.opacity_mask:
                 renders_opacities.append(render_pkg["opacity"])
                 # import pdb; pdb.set_trace()
