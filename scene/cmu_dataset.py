@@ -1,13 +1,39 @@
 import json
 import os
+import torch
 
 import numpy as np
 import torchvision.transforms as T
 from PIL import Image
 from torch.utils.data import Dataset
 
-from scene.dataset_readers import CameraInfoExtra
-from utils.graphics_utils import focal2fov
+def setup_camera(w, h, k, w2c, near=0.01, far=100):
+    from diff_gaussian_rasterization import GaussianRasterizationSettings as Camera
+    fx, fy, cx, cy = k[0][0], k[1][1], k[0][2], k[1][2]
+    w2c = torch.tensor(w2c).cuda().float()
+    cam_center = torch.inverse(w2c)[:3, 3]
+    w2c = w2c.unsqueeze(0).transpose(1, 2)
+    opengl_proj = torch.tensor([[2 * fx / w, 0.0, -(w - 2 * cx) / w, 0.0],
+                                [0.0, 2 * fy / h, -(h - 2 * cy) / h, 0.0],
+                                [0.0, 0.0, far / (far - near), -(far * near) / (far - near)],
+                                [0.0, 0.0, 1.0, 0.0]]).cuda().float().unsqueeze(0).transpose(1, 2)
+    full_proj = w2c.bmm(opengl_proj)
+    cam = Camera(
+        image_height=h,
+        image_width=w,
+        tanfovx=w / (2 * fx),
+        tanfovy=h / (2 * fy),
+        bg=torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda"),
+        scale_modifier=1.0,
+        viewmatrix=w2c,
+        projmatrix=full_proj,
+        sh_degree=0,
+        campos=cam_center,
+        prefiltered=False,
+        debug=True
+    )
+    return cam
+
 class PanopticDataset(Dataset):
     def __init__(self, datadir: str, json_path: str):
         # --- load metadata once ---
@@ -34,10 +60,6 @@ class PanopticDataset(Dataset):
                 K = np.array(K_list, dtype=np.float32).reshape(3, 3)
                 fx = float(K[0, 0])
                 fy = float(K[1, 1])
-                cx = float(K[0, 2])
-                cy = float(K[1, 2])
-                fovx = focal2fov(fx, self.w)
-                fovy = focal2fov(fy, self.h)
 
                 self.entries.append(
                     {
@@ -45,10 +67,6 @@ class PanopticDataset(Dataset):
                         "K": K,
                         "fx": fx,
                         "fy": fy,
-                        "cx": cx,
-                        "cy": cy,
-                        "FovX": fovx,
-                        "FovY": fovy,
                         "w2c": np.array(w2c_list, dtype=np.float32),
                         "fn": fn,
                         "cam_id": cid,
@@ -69,24 +87,14 @@ class PanopticDataset(Dataset):
         img = Image.open(img_path).convert("RGB")
         img = self.transform(img)
 
-        w2c = e["w2c"]
-        R = np.transpose(w2c[:3, :3])
-        T = w2c[:3, 3]
-        
-        return CameraInfoExtra(
-            uid=idx,
-            R=R,
-            T=T,
-            FovY=e["FovY"],
-            FovX=e["FovX"],
-            image=img,
-            image_path=img_path,
-            image_name=e["fn"],
-            width=self.w,
-            height=self.h,
-            timestamp=e["time"],
-            focal_length_x=e["fx"],
-            focal_length_y=e["fy"],
-            cx=e["cx"],
-            cy=e["cy"],
+        # build camera; pass K and w2c positionally, not as 'K='
+        cam = setup_camera(
+            self.w,  # image width
+            self.h,  # image height
+            e["K"],  # your 3×3 intrinsics matrix
+            e["w2c"],  # world-to-camera 4×4
+            near=0.01,
+            far=100.0,
         )
+
+        return {"camera": cam, "image": img, "time": e["time"], "cam_id": e["cam_id"]}

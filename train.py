@@ -183,8 +183,11 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
         gt_images = []
         gt_mask = []
         for viewpoint_cam in viewpoint_cams:
-                
-            time_sample = viewpoint_cam.timestamp
+            
+            if scene.is_panoptic:
+                time_sample = viewpoint_cam["time"]
+            else:
+                time_sample = viewpoint_cam.timestamp
             # print(f"time_sample: {time_sample}")
             if iteration > opt.no_deform_from_iter:
                 gaussians.need_deformed = True
@@ -203,7 +206,7 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
             
             if (iteration - 1) == debug_from:
                 pipe.debug = True
-            render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+            render_pkg = render(viewpoint_cam, gaussians, pipe, background, cam_type="PanopticSports" if scene.is_panoptic else None)
             
             renders.append(render_pkg["render"])
             viewspace_points.append(render_pkg["viewspace_points"])

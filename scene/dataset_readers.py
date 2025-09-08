@@ -612,7 +612,7 @@ def readPanopticSportsinfos(datadir,use_bg_points,eval):
 
     ply_path = os.path.join(datadir, "pointd3D.ply")
 
-        # Since this data set has no colmap data, we start with random points
+    # Since this data set has no colmap data, we start with random points
     plz_path = os.path.join(datadir, "init_pt_cld.npz")
     data = np.load(plz_path)["data"]
     xyz = data[:,:3]

@@ -109,10 +109,10 @@ class Scene:
                 self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
                 # self.gaussians.factor_t = True
         elif self.is_dynerf or self.is_dna or self.is_panoptic:
-            self.train_cameras = FourDGSdataset(scene_info.train_cameras, args)
-            self.train_cameras_0 = FourDGSdataset(scene_info.train_cameras_0, args)
-            self.test_cameras = FourDGSdataset(scene_info.test_cameras, args)
-            
+            self.train_cameras = FourDGSdataset(scene_info.train_cameras, args, dataset_type="Other" if not self.is_panoptic else "PanopticSports")
+            self.train_cameras_0 = FourDGSdataset(scene_info.train_cameras_0, args, dataset_type="Other" if not self.is_panoptic else "PanopticSports")
+            self.test_cameras = FourDGSdataset(scene_info.test_cameras, args, dataset_type="Other" if not self.is_panoptic else "PanopticSports")
+
         self.video_camera = None
         if scene_info.video_cameras is not None:
             self.video_camera = cameraList_from_camInfos(scene_info.video_cameras, -1,args,)

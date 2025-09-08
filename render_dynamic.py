@@ -33,7 +33,7 @@ to8b = lambda x : (255*np.clip(x.cpu().numpy(),0,1)).astype(np.uint8)
 import numpy as np
 from utils.sh_utils import eval_sh
 
-def render_set(model_path, name, iteration, views, gaussians, pipeline, background, save_npz=False):
+def render_set(model_path, name, iteration, views, gaussians, pipeline, background, save_npz=False, cam_type=None):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
 
@@ -59,7 +59,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         time1 = time()
         view = views[idx]
         gaussians.set_timestamp(view.timestamp)
-        render_pkg = render(view, gaussians, pipeline, background)
+        render_pkg = render(view, gaussians, pipeline, background, cam_type=cam_type)
 
         if save_npz:
             shs_view = gaussians.get_features.transpose(1, 2).view(-1, 3, (gaussians.max_sh_degree+1)**2)
@@ -154,7 +154,7 @@ def render_sets(dataset : ModelParams, opt, flow_args, iteration : int, pipeline
             offset_t_value=opt.offset_t_value,
         )
         scene = Scene(dataset, gaussians, shuffle=False, load_img_factor=pipeline.load_img_factor)
-        
+        cam_type = "PanopticSports" if scene.is_panoptic else None
         gaussians.training_setup(opt, flow_args)
         (model_params, first_iter) = torch.load(os.path.join(dataset.model_path, f"{ckpt_name}"), weights_only=False)
         gaussians.restore(model_params, opt, flow_args)
@@ -163,12 +163,12 @@ def render_sets(dataset : ModelParams, opt, flow_args, iteration : int, pipeline
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
         if not skip_train:
-            render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background)
+            render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, cam_type=cam_type)
 
         if not skip_test:
-            render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background)
+            render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, cam_type=cam_type)
         if not skip_video:
-            render_set(dataset.model_path,"video",scene.loaded_iter,scene.getVideoCameras(),gaussians,pipeline,background, save_npz=save_npz)
+            render_set(dataset.model_path,"video",scene.loaded_iter,scene.getVideoCameras(),gaussians,pipeline,background, save_npz=save_npz, cam_type=cam_type)
             
 if __name__ == "__main__":
     ti.init(arch=ti.cuda, offline_cache=False)

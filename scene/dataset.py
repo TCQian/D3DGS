@@ -14,11 +14,16 @@ class FourDGSdataset(Dataset):
         dataset,
         args,
         split="train",
+        dataset_type="Other"
     ):
         self.dataset = dataset
         self.args = args
         self.split = split
+        self.dataset_type=dataset_type
     def __getitem__(self, index):
+        if self.dataset_type == "PanopticSports":
+            return self.dataset[index]
+        
         caminfo = None
         try:
             image, w2c, time = self.dataset[index]
