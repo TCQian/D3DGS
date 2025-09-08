@@ -625,7 +625,7 @@ def readPanopticSportsinfos(datadir,use_bg_points,eval):
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
-                           video_cameras=test_cam_infos,
+                           video_cameras=None,
                            train_cameras_0=None,
                            nerf_normalization=nerf_normalization,
                            ply_path=ply_path,

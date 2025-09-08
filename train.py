@@ -140,7 +140,7 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
             else:
                 viewpoint_stack = scene.getTrainCameras()
             batch_size = opt.batch_size
-            if opt.dataloader:
+            if opt.dataloader and not scene.is_panoptic:
                 viewpoint_stack_loader = DataLoader(
                     viewpoint_stack, 
                     batch_size=batch_size,
@@ -154,7 +154,7 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
                 viewpoint_stack = [i for i in viewpoint_stack]
                 temp_list = deepcopy(viewpoint_stack)
                 viewpoint_stack = temp_list.copy()
-        if opt.dataloader:
+        if opt.dataloader and not scene.is_panoptic:
             try:
                 viewpoint_cams = next(loader)
             except StopIteration:
