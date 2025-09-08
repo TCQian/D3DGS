@@ -476,10 +476,18 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 ssims_test = 0.0
                 lpips_test = 0.0
                 for idx, viewpoint in enumerate(config['cameras']):
-                    scene.gaussians.set_timestamp(viewpoint.timestamp)
-                    render_result = renderFunc(viewpoint, scene.gaussians, *renderArgs)
+                    if scene.is_panoptic:
+                        time_sample = viewpoint["time"]
+                        gt_image  = viewpoint['image'].cuda()
+                        image_name = idx
+                    else:
+                        time_sample = viewpoint.timestamp
+                        gt_image = viewpoint.original_image.cuda()
+                        image_name = viewpoint.image_name
+                    scene.gaussians.set_timestamp(time_sample)
+                    render_result = (viewpoint, scene.gaussians, *renderArgs)
                     image = torch.clamp(render_result["render"], 0.0, 1.0)
-                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+                    gt_image = torch.clamp(gt_image, 0.0, 1.0)
                     # opacity = render_result["opacity"]
                     # depth = render_result["depth"]
                     # depth_normal = (depth - depth.min()) / (depth.max() - depth.min())
@@ -488,8 +496,8 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     #     if viewpoint.extra_cam_info.mask is not None:
                     #         gt_opacity = viewpoint.extra_cam_info.mask.float().cuda()
                     if tb_writer:
-                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
-                        tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
+                        tb_writer.add_images(config['name'] + "_view_{}/render".format(image_name), image[None], global_step=iteration)
+                        tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(image_name), gt_image[None], global_step=iteration)
                         # tb_writer.add_images(config['name'] + "_view_{}/opacity".format(viewpoint.image_name), opacity[None], global_step=iteration)
                         # tb_writer.add_images(config['name'] + "_view_{}/depth".format(viewpoint.image_name), depth_normal[None], global_step=iteration)
                         # if gt_opacity is not None:
