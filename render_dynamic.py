@@ -58,7 +58,15 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     for idx in tqdm(range(max_frames), desc="Rendering progress"):
         time1 = time()
         view = views[idx]
-        gaussians.set_timestamp(view.timestamp)
+        if cam_type == "PanopticSports":
+            time_sample = view["time"]
+            gt_image  = view['image'].cuda()
+            image_name = idx
+        else:
+            time_sample = view.timestamp
+            gt_image = view.original_image.cuda()
+            image_name = view.image_name
+        gaussians.set_timestamp(time_sample)
         render_pkg = render(view, gaussians, pipeline, background, cam_type=cam_type)
 
         if save_npz:
@@ -95,8 +103,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         imageio.imwrite(os.path.join(render_path, f"{idx:05d}.png"),
                 to8b(rendering.detach().cpu()).transpose(1, 2, 0))
         # render_list.append(rendering)
-        gt = view.original_image[0:3, :, :]
-        torchvision.utils.save_image(gt, os.path.join(gts_path, f"{idx:05d}.png"))
+        torchvision.utils.save_image(gt_image, os.path.join(gts_path, f"{idx:05d}.png"))
             # gt_list.append(gt)
     print("FPS:",(len(views)-1)/total_time)
     
