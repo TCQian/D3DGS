@@ -429,7 +429,7 @@ def training_report_real_dynamic(tb_writer, iteration, Ll1, loss, l1_loss, reg_l
                         gt_image = viewpoint.original_image.cuda()
                         image_name = viewpoint.image_name
                     scene.gaussians.set_timestamp(time_sample)
-                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
+                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs, cam_type="PanopticSports" if scene.is_panoptic else None)["render"], 0.0, 1.0)
                     gt_image = torch.clamp(gt_image, 0.0, 1.0)
                     tb_writer.add_images(config['name'] + "_view_{}_frame_{}/render".format(image_name, time_sample), image[None], global_step=iteration)
                     tb_writer.add_images(config['name'] + "_view_{}_frame_{}/ground_truth".format(image_name, time_sample), gt_image[None], global_step=iteration)
@@ -485,7 +485,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                         gt_image = viewpoint.original_image.cuda()
                         image_name = viewpoint.image_name
                     scene.gaussians.set_timestamp(time_sample)
-                    render_result = (viewpoint, scene.gaussians, *renderArgs)
+                    render_result = renderFunc(viewpoint, scene.gaussians, *renderArgs, cam_type="PanopticSports" if scene.is_panoptic else None)
                     image = torch.clamp(render_result["render"], 0.0, 1.0)
                     gt_image = torch.clamp(gt_image, 0.0, 1.0)
                     # opacity = render_result["opacity"]
