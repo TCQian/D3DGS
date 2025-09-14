@@ -48,6 +48,7 @@ class Scene:
         self.is_hyper = False
         self.is_blender = False
         self.is_colmap = False
+        self.is_panoptic = False
         self.is_dna = True if smc_file is not None else False
 
         if self.is_dna:
