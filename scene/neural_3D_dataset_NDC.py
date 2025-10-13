@@ -364,12 +364,12 @@ class Neural3D_NDC_Dataset(Dataset):
                 #     video_data_save[count] = img.permute(1,2,0)
                 #     count += 1
                 
-        if split == "test":
-            image_paths = image_paths[::10]
-            image_poses = image_poses[::10]
-            image_times = image_times[::10]
-            N_cams = int(N_cams/10)
-            N_time = int(N_time/10)
+        # if split == "test":
+        #     image_paths = image_paths[::10]
+        #     image_poses = image_poses[::10]
+        #     image_times = image_times[::10]
+        #     N_cams = int(N_cams/10)
+        #     N_time = int(N_time/10)
         return image_paths, image_poses, image_times, N_cams, N_time
     def __len__(self):
         return len(self.image_paths)
