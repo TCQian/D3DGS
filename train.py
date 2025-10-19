@@ -10,6 +10,7 @@
 #
 
 import os
+import time
 from copy import deepcopy
 import torch
 from random import randint
@@ -118,6 +119,10 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
         gaussians.get_knn_index()
         
     # grad_scaler = torch.cuda.amp.GradScaler(2**10)
+    
+    # Record training start time
+    training_start_time = time.time()
+    
     for iteration in range(first_iter, opt.iterations + 1):        
 
         iter_start.record()
@@ -370,6 +375,22 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
                 # else:
                 #     gaussians.save_diff(scene.model_path.replace(frame_id, ''))
         # torch.cuda.empty_cache()
+    
+    # Calculate and print total training time
+    training_end_time = time.time()
+    total_training_time = training_end_time - training_start_time
+    hours = int(total_training_time // 3600)
+    minutes = int((total_training_time % 3600) // 60)
+    seconds = int(total_training_time % 60)
+    
+    print(f"\n{'='*50}")
+    print(f"TRAINING COMPLETED")
+    print(f"{'='*50}")
+    print(f"Total training time: {hours:02d}:{minutes:02d}:{seconds:02d} ({total_training_time:.2f} seconds)")
+    print(f"Total iterations: {opt.iterations}")
+    print(f"Average time per iteration: {total_training_time/opt.iterations:.4f} seconds")
+    print(f"{'='*50}")
+    
     print("\n[ITER {}] Saving Checkpoint".format(iteration))
     torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
