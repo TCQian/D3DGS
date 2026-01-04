@@ -30,6 +30,7 @@ from render_dynamic import render_sets
 import torch.nn.functional as F
 from pytorch_msssim import ms_ssim
 from lpips import LPIPS
+import torchvision
 
 from torch.utils.data import DataLoader
 try:
@@ -235,6 +236,11 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
         images = torch.stack(renders)
         gt_images = torch.stack(gt_images)    
         
+        # Save first train image for debugging
+        debug_dir = os.path.join(scene.model_path, "debug_images")
+        os.makedirs(debug_dir, exist_ok=True)
+        torchvision.utils.save_image(images[0], os.path.join(debug_dir, f"train_render_iter_{iteration:06d}.png"))
+        torchvision.utils.save_image(gt_images[0], os.path.join(debug_dir, f"train_gt_iter_{iteration:06d}.png"))
 
         Ll1 = l1_loss(images, gt_images)
         # Ll1 = F.smooth_l1_loss(images, gt_images)
@@ -509,6 +515,12 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     render_result = renderFunc(viewpoint, scene.gaussians, *renderArgs, cam_type="PanopticSports" if scene.is_panoptic else None)
                     image = torch.clamp(render_result["render"], 0.0, 1.0)
                     gt_image = torch.clamp(gt_image, 0.0, 1.0)
+                    # Save first test/train image for debugging
+                    if idx == 0:
+                        debug_dir = os.path.join(scene.model_path, "debug_images")
+                        os.makedirs(debug_dir, exist_ok=True)
+                        torchvision.utils.save_image(image, os.path.join(debug_dir, f"{config['name']}_render_iter_{iteration:06d}.png"))
+                        torchvision.utils.save_image(gt_image, os.path.join(debug_dir, f"{config['name']}_gt_iter_{iteration:06d}.png"))
                     # opacity = render_result["opacity"]
                     # depth = render_result["depth"]
                     # depth_normal = (depth - depth.min()) / (depth.max() - depth.min())
