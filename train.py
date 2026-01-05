@@ -235,12 +235,6 @@ def training(dataset, opt, pipe, flow_args, testing_iterations, saving_iteration
         visibility_filter = torch.cat(visibility_filters).any(dim=0)
         images = torch.stack(renders)
         gt_images = torch.stack(gt_images)    
-        
-        # Save first train image for debugging
-        debug_dir = os.path.join(scene.model_path, "debug_images")
-        os.makedirs(debug_dir, exist_ok=True)
-        torchvision.utils.save_image(images[0], os.path.join(debug_dir, f"train_render_iter_{iteration:06d}.png"))
-        torchvision.utils.save_image(gt_images[0], os.path.join(debug_dir, f"train_gt_iter_{iteration:06d}.png"))
 
         Ll1 = l1_loss(images, gt_images)
         # Ll1 = F.smooth_l1_loss(images, gt_images)
