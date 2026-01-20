@@ -16,6 +16,7 @@ from tqdm import tqdm
 from gaussian_renderer import render
 from utils.sh_utils import eval_sh
 
+PANOPTIC_FAR = 100.0
 
 def get_basketball_mask_from_image(rendered_image, method='manual', mask_path=None):
     """
@@ -786,6 +787,7 @@ def plot_camera_space_positions(
     output_dir,
     max_frames=None,
     frame_interval=1,
+    far_depth=None,
 ):
     """
     Plot basketball Gaussians in camera space for each frame.
@@ -798,7 +800,12 @@ def plot_camera_space_positions(
         output_dir: Directory to save plots
         max_frames: Maximum number of frames to plot (None = all)
         frame_interval: Plot every Nth frame
+        far_depth: Max depth (Z in camera space); points with z >= far_depth are
+            out of view. Defaults to scene.cmu_dataset.PANOPTIC_FAR when
+            PanopticDataset is used.
     """
+    if far_depth is None:
+        far_depth = PANOPTIC_FAR
     if trajectories.shape[1] == 0:
         print("Warning: No basketball Gaussians to plot in camera space")
         return
@@ -942,9 +949,11 @@ def plot_camera_space_positions(
                 opacity_np = op.detach().cpu().numpy()
                 _opacity_threshold = 0.01
 
-                # Only visible: in front of camera, in image bounds, non-transparent
+                # Only visible: in front of camera, within far plane (PanopticDataset far),
+                # in image bounds, non-transparent
                 valid_mask = (
                     (xyz_cam_3d[:, 2] > 0)
+                    & (xyz_cam_3d[:, 2] < far_depth)
                     & (pixel_x >= 0)
                     & (pixel_x < W)
                     & (pixel_y >= 0)
