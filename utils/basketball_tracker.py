@@ -11,6 +11,7 @@ import imageio
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib.patches import Circle
 from tqdm import tqdm
 
 from gaussian_renderer import render
@@ -574,13 +575,98 @@ def project_gaussians_to_2d(gaussians, camera, image_size):
     means2D[:, 0] = (x_coord + 1) * W / 2
     means2D[:, 1] = (y_coord + 1) * H / 2
 
-    # Estimate radii (simplified - uses scale)
-    scales = gaussians.get_scaling  # [N, 3]
-    max_scale = scales.max(dim=1)[0]  # [N]
-    # Approximate radius based on scale and distance
-    distances = xyz_cam[:, 2].abs().contiguous().view(-1)  # [N] - ensure 1D
-    # Rough approximation: scale / distance * image_width
-    radii = (max_scale / (distances + 1e-7)) * W * 0.5
+    # Compute exact radii using the same method as CUDA rasterizer
+    # This matches forward.cu:preprocessCUDA() lines 215-232
+    try:
+        # Get camera intrinsics
+        if hasattr(camera, 'FoVx') and hasattr(camera, 'FoVy'):
+            import math
+
+            tan_fovx = math.tan(camera.FoVx * 0.5)
+            tan_fovy = math.tan(camera.FoVy * 0.5)
+            focal_x = W / (2 * tan_fovx)
+            focal_y = H / (2 * tan_fovy)
+        elif isinstance(camera, dict) and 'camera' in camera:
+            raster_settings = camera['camera']
+            tan_fovx = raster_settings.tanfovx
+            tan_fovy = raster_settings.tanfovy
+            focal_x = W / (2 * tan_fovx)
+            focal_y = H / (2 * tan_fovy)
+        else:
+            raise ValueError("Cannot determine camera intrinsics")
+
+        # Get 3D covariance matrices (uses get_covariance which matches CUDA)
+        cov3D = gaussians.get_covariance(1.0)  # [N, 6] format: [xx, xy, xz, yy, yz, zz]
+
+        # Transform points to camera space
+        xyz_cam_3d = xyz_cam[:, :3]  # [N, 3]
+
+        # Extract viewmatrix rotation part (first 3x3)
+        w2c_rot = w2c[:3, :3]  # [3, 3]
+
+        # Vectorized computation of 2D covariance and radii
+        t = xyz_cam_3d  # [N, 3]
+
+        # Clamp to frustum limits (matches CUDA lines 82-87)
+        limx = 1.3 * tan_fovx
+        limy = 1.3 * tan_fovy
+        txtz = t[:, 0] / (t[:, 2] + 1e-7)
+        tytz = t[:, 1] / (t[:, 2] + 1e-7)
+        t_clamped = torch.stack(
+            [torch.clamp(txtz, -limx, limx) * t[:, 2], torch.clamp(tytz, -limy, limy) * t[:, 2], t[:, 2]], dim=1
+        )  # [N, 3]
+
+        # Jacobian matrices J for all Gaussians (CUDA lines 89-92)
+        tz = t_clamped[:, 2:3]  # [N, 1]
+        J = torch.zeros(N, 3, 3, device=xyz.device)
+        J[:, 0, 0] = focal_x / tz.squeeze()
+        J[:, 0, 2] = -(focal_x * t_clamped[:, 0]) / (tz.squeeze() * tz.squeeze())
+        J[:, 1, 1] = focal_y / tz.squeeze()
+        J[:, 1, 2] = -(focal_y * t_clamped[:, 1]) / (tz.squeeze() * tz.squeeze())
+
+        # Transformation matrices T = W * J (CUDA lines 94-99)
+        T = w2c_rot.unsqueeze(0) @ J  # [N, 3, 3]
+
+        # Reconstruct 3x3 covariance matrices from 6 values (CUDA lines 101-104)
+        Vrk = torch.zeros(N, 3, 3, device=xyz.device)
+        Vrk[:, 0, 0] = cov3D[:, 0]  # xx
+        Vrk[:, 0, 1] = cov3D[:, 1]  # xy
+        Vrk[:, 0, 2] = cov3D[:, 2]  # xz
+        Vrk[:, 1, 0] = cov3D[:, 1]  # xy (symmetric)
+        Vrk[:, 1, 1] = cov3D[:, 3]  # yy
+        Vrk[:, 1, 2] = cov3D[:, 4]  # yz
+        Vrk[:, 2, 0] = cov3D[:, 2]  # xz (symmetric)
+        Vrk[:, 2, 1] = cov3D[:, 4]  # yz (symmetric)
+        Vrk[:, 2, 2] = cov3D[:, 5]  # zz
+
+        # 2D covariance: cov = T^T * Vrk^T * T (CUDA line 106)
+        cov2D = T.transpose(1, 2) @ Vrk.transpose(1, 2) @ T  # [N, 3, 3]
+
+        # Apply low-pass filter (CUDA lines 110-111)
+        cov2D[:, 0, 0] += 0.3
+        cov2D[:, 1, 1] += 0.3
+
+        # Extract 2D covariance values (only need 2x2 upper left)
+        cov_xx = cov2D[:, 0, 0]  # [N]
+        cov_xy = cov2D[:, 0, 1]  # [N]
+        cov_yy = cov2D[:, 1, 1]  # [N]
+
+        # Compute eigenvalues (CUDA lines 229-231)
+        det = cov_xx * cov_yy - cov_xy * cov_xy  # [N]
+        mid = 0.5 * (cov_xx + cov_yy)  # [N]
+        lambda1 = mid + torch.sqrt(torch.clamp(mid * mid - det, min=0.1))  # [N]
+        lambda2 = mid - torch.sqrt(torch.clamp(mid * mid - det, min=0.1))  # [N]
+
+        # Compute radius (CUDA line 232): ceil(3.0 * sqrt(max(lambda1, lambda2)))
+        radii = torch.ceil(3.0 * torch.sqrt(torch.maximum(lambda1, lambda2)))  # [N]
+
+    except Exception as e:
+        # Fallback to approximate method if exact computation fails
+        print(f"Warning: Exact radius computation failed ({e}), using approximation")
+        scales = gaussians.get_scaling  # [N, 3]
+        max_scale = scales.max(dim=1)[0]  # [N]
+        distances = xyz_cam[:, 2].abs().contiguous().view(-1)  # [N]
+        radii = (max_scale / (distances + 1e-7)) * W * 0.5
 
     return means2D, radii
 
@@ -937,8 +1023,9 @@ def plot_camera_space_positions(
             # identify_basketball_gaussians) so projected centers align with the mask's
             # ball-shaped region. [H,W] and (x,y) convention match basketball_mask.
             if H is not None and W is not None:
-                means2D, _ = project_gaussians_to_2d(gaussians, camera, (H, W))
+                means2D, radii_approx = project_gaussians_to_2d(gaussians, camera, (H, W))
                 means2D_b = means2D[basketball_indices_torch].detach().cpu().numpy()
+                radii_b = radii_approx[basketball_indices_torch].detach().cpu().numpy()
                 pixel_x = means2D_b[:, 0]  # col
                 pixel_y = means2D_b[:, 1]  # row
 
@@ -962,6 +1049,8 @@ def plot_camera_space_positions(
                 valid_pixel_x = pixel_x[valid_mask]
                 valid_pixel_y = pixel_y[valid_mask]
                 valid_z = z_values[valid_mask]
+                valid_radii = radii_b[valid_mask]  # Screen-space radii in pixels
+                valid_opacities = opacity_np[valid_mask]  # Base opacity values (con_o.w in CUDA)
 
                 # Compute rendered colors for basketball Gaussians (matching render() function)
                 # Get camera center
@@ -1017,17 +1106,39 @@ def plot_camera_space_positions(
 
                 fig, ax = plt.subplots(figsize=(12, 10))
                 if len(valid_pixel_x) > 0:
+                    # Scale marker size based on radius (radius is in pixels, s is in points^2)
+                    # Use radius directly scaled to marker size: larger radius = larger marker
+                    # Clamp radii to reasonable range for visualization
+                    marker_sizes = np.clip(valid_radii * 2, 5, 200)  # Scale factor and limits
+
                     if rendered_colors is not None:
-                        # Use rendered colors
+                        # Use rendered colors, size by radius, alpha by opacity
+                        # Note: In actual rendering, alpha = opacity * exp(power) where power
+                        # decreases exponentially with distance from center. Here we use base opacity
+                        # for visualization transparency.
                         scatter = ax.scatter(
                             valid_pixel_x,
                             valid_pixel_y,
                             c=valid_colors,
-                            alpha=0.8,
-                            s=30,
+                            s=marker_sizes,
+                            alpha=valid_opacities,  # Use actual opacity values (varies per Gaussian)
                             edgecolors="black",
                             linewidths=0.5,
                         )
+                        # Also draw circles showing actual radius for a few samples
+                        # Sample every Nth Gaussian to avoid clutter
+                        sample_indices = np.arange(0, len(valid_pixel_x), max(1, len(valid_pixel_x) // 20))
+                        for idx in sample_indices:
+                            circle = Circle(
+                                (valid_pixel_x[idx], valid_pixel_y[idx]),
+                                valid_radii[idx],
+                                fill=False,
+                                edgecolor='gray',
+                                linewidth=0.5,
+                                alpha=0.3,
+                                linestyle='--',
+                            )
+                            ax.add_patch(circle)
                     else:
                         # Fallback to depth coloring if colors unavailable
                         print("Fallback to depth coloring")
@@ -1036,24 +1147,39 @@ def plot_camera_space_positions(
                             valid_pixel_y,
                             c=valid_z,
                             cmap="viridis",
-                            alpha=0.6,
-                            s=30,
+                            s=marker_sizes,
+                            alpha=valid_opacities,  # Use actual opacity values (varies per Gaussian)
                             edgecolors="black",
                             linewidths=0.5,
                         )
+                        # Also draw circles showing actual radius for a few samples
+                        sample_indices = np.arange(0, len(valid_pixel_x), max(1, len(valid_pixel_x) // 20))
+                        for idx in sample_indices:
+                            circle = plt.Circle(
+                                (valid_pixel_x[idx], valid_pixel_y[idx]),
+                                valid_radii[idx],
+                                fill=False,
+                                edgecolor='gray',
+                                linewidth=0.5,
+                                alpha=0.3,
+                                linestyle='--',
+                            )
+                            ax.add_patch(circle)
                     ax.set_xlim(0, W)
                     ax.set_ylim(H, 0)
                     ax.set_xlabel("Pixel X (col, 0=left)")
                     ax.set_ylabel("Pixel Y (row; row 0 = viewport bottom in rasterizer)")
                     if rendered_colors is not None:
                         ax.set_title(
-                            f"Basketball Gaussians Projected to Image Pixel Coordinates (Rendered Colors) - Frame {t}\n"
-                            f"({len(valid_pixel_x)}/{N_basketball} visible; same (x,y) as basketball_mask [H,W])"
+                            f"Basketball Gaussians Projected to Image Pixel Coordinates (Rendered Colors + Radius + Opacity) - Frame {t}\n"
+                            f"({len(valid_pixel_x)}/{N_basketball} visible; size ∝ radius; transparency ∝ base opacity; "
+                            f"dashed circles show 3σ radius; actual alpha = opacity × exp(power) per pixel)"
                         )
                     else:
                         ax.set_title(
-                            f"Basketball Gaussians Projected to Image Pixel Coordinates - Frame {t}\n"
-                            f"({len(valid_pixel_x)}/{N_basketball} visible; same (x,y) as basketball_mask [H,W])"
+                            f"Basketball Gaussians Projected to Image Pixel Coordinates (Radius + Opacity) - Frame {t}\n"
+                            f"({len(valid_pixel_x)}/{N_basketball} visible; size ∝ radius; transparency ∝ base opacity; "
+                            f"dashed circles show 3σ radius; actual alpha = opacity × exp(power) per pixel)"
                         )
                     ax.grid(True, alpha=0.3)
                     if rendered_colors is None:
