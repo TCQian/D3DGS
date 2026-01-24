@@ -18,6 +18,7 @@ from utils.sh_utils import eval_sh
 
 PANOPTIC_FAR = 100.0
 
+
 def get_basketball_mask_from_image(rendered_image, method='manual', mask_path=None):
     """
     Get mask for basketball region.
@@ -941,51 +942,123 @@ def plot_camera_space_positions(
                 pixel_x = means2D_b[:, 0]  # col
                 pixel_y = means2D_b[:, 1]  # row
 
-                # Opacity: exclude invisible (transparent) Gaussians
+                # Frustum culling: match CUDA in_frustum() operation
+                # CUDA checks: p_view.z > 0.2f (near plane culling only)
+                # This matches the check in forward.cu:in_frustum() -> auxiliary.h:in_frustum()
+
+                # Opacity check: match CUDA renderCUDA() operation
+                # CUDA checks: alpha < 1.0f / 255.0f (approximately 0.00392) during rendering
+                # We check raw opacity here (before exponential falloff), using a slightly higher threshold
                 opacities = gaussians.get_opacity
                 op = opacities[basketball_indices_torch]
                 if op.dim() > 1:
                     op = op.squeeze(-1)
                 opacity_np = op.detach().cpu().numpy()
-                _opacity_threshold = 0.01
+                _opacity_threshold = 1.0 / 255.0  # Match CUDA's alpha threshold (0.00392)
 
-                # Only visible: in front of camera, within far plane (PanopticDataset far),
-                # in image bounds, non-transparent
-                valid_mask = (
-                    (xyz_cam_3d[:, 2] > 0)
-                    & (xyz_cam_3d[:, 2] < far_depth)
-                    & (pixel_x >= 0)
-                    & (pixel_x < W)
-                    & (pixel_y >= 0)
-                    & (pixel_y < H)
-                    & (opacity_np >= _opacity_threshold)
-                )
+                valid_mask = (xyz_cam_3d[:, 2] > 0.2) & (  # Frustum culling (matches in_frustum)
+                    opacity_np >= _opacity_threshold
+                )  # Opacity check (matches renderCUDA)
                 valid_pixel_x = pixel_x[valid_mask]
                 valid_pixel_y = pixel_y[valid_mask]
                 valid_z = z_values[valid_mask]
 
+                # Compute rendered colors for basketball Gaussians (matching render() function)
+                # Get camera center
+                if hasattr(camera, 'camera_center'):
+                    cam_center = camera.camera_center
+                    if not isinstance(cam_center, torch.Tensor):
+                        cam_center = torch.tensor(cam_center, device=basketball_mask.device)
+                    if cam_center.device != basketball_mask.device:
+                        cam_center = cam_center.to(basketball_mask.device)
+                elif isinstance(camera, dict) and 'camera' in camera:
+                    # For PanopticSports/CMU, use campos from rasterization settings
+                    raster_settings = camera['camera']
+                    if hasattr(raster_settings, 'campos'):
+                        cam_center = raster_settings.campos
+                        if not isinstance(cam_center, torch.Tensor):
+                            cam_center = torch.tensor(cam_center, device=basketball_mask.device)
+                        if cam_center.device != basketball_mask.device:
+                            cam_center = cam_center.to(basketball_mask.device)
+                    else:
+                        # Fallback: extract camera center from viewmatrix
+                        # w2c is already in original format (untransposed) after line 875
+                        # Match helpers.py: cam_center = torch.inverse(w2c)[:3, 3]
+                        w2c_inv = torch.inverse(w2c)
+                        cam_center = w2c_inv[:3, 3]
+                else:
+                    cam_center = None
+
+                # Compute rendered colors if camera center is available
+                rendered_colors = None
+                if cam_center is not None:
+                    # Get SH features for basketball Gaussians
+                    # get_features returns [N, (deg+1)^2, 3] (concatenated features_dc and features_rest)
+                    sh_features = gaussians.get_features  # [N, (deg+1)^2, 3]
+                    sh_basketball = sh_features[basketball_indices_torch]  # [N_basketball, (deg+1)^2, 3]
+
+                    # Compute direction from camera center to each Gaussian
+                    dir_pp = xyz_basketball - cam_center.unsqueeze(0)  # [N_basketball, 3]
+                    dir_pp_normalized = dir_pp / (dir_pp.norm(dim=1, keepdim=True) + 1e-7)
+
+                    # Reshape SH features to match render() function: [N, (deg+1)^2, 3] -> [N, 3, (deg+1)^2]
+                    sh_basketball_view = sh_basketball.transpose(1, 2)  # [N_basketball, 3, (deg+1)^2]
+
+                    # Evaluate SH to get RGB colors
+                    sh2rgb = eval_sh(
+                        gaussians.active_sh_degree, sh_basketball_view, dir_pp_normalized
+                    )  # [N_basketball, 3]
+
+                    # Apply same transformation as in render(): clamp_min(sh2rgb + 0.5, 0.0)
+                    # For matplotlib visualization, also clamp to [0, 1] range
+                    rendered_colors_torch = torch.clamp(sh2rgb + 0.5, 0.0, 1.0)  # [N_basketball, 3]
+                    rendered_colors = rendered_colors_torch.detach().cpu().numpy()  # [N_basketball, 3]
+                    valid_colors = rendered_colors[valid_mask]  # [N_valid, 3]
+
                 fig, ax = plt.subplots(figsize=(12, 10))
                 if len(valid_pixel_x) > 0:
-                    scatter = ax.scatter(
-                        valid_pixel_x,
-                        valid_pixel_y,
-                        c=valid_z,
-                        cmap="viridis",
-                        alpha=0.6,
-                        s=30,
-                        edgecolors="black",
-                        linewidths=0.5,
-                    )
+                    if rendered_colors is not None:
+                        # Use rendered colors
+                        scatter = ax.scatter(
+                            valid_pixel_x,
+                            valid_pixel_y,
+                            c=valid_colors,
+                            alpha=0.8,
+                            s=30,
+                            edgecolors="black",
+                            linewidths=0.5,
+                        )
+                    else:
+                        # Fallback to depth coloring if colors unavailable
+                        print("Fallback to depth coloring")
+                        scatter = ax.scatter(
+                            valid_pixel_x,
+                            valid_pixel_y,
+                            c=valid_z,
+                            cmap="viridis",
+                            alpha=0.6,
+                            s=30,
+                            edgecolors="black",
+                            linewidths=0.5,
+                        )
                     ax.set_xlim(0, W)
                     ax.set_ylim(H, 0)
                     ax.set_xlabel("Pixel X (col, 0=left)")
                     ax.set_ylabel("Pixel Y (row; row 0 = viewport bottom in rasterizer)")
-                    ax.set_title(
-                        f"Basketball Gaussians Projected to Image Pixel Coordinates - Frame {t}\n"
-                        f"({len(valid_pixel_x)}/{N_basketball} visible; same (x,y) as basketball_mask [H,W])"
-                    )
+                    if rendered_colors is not None:
+                        ax.set_title(
+                            f"Basketball Gaussians Projected to Image Pixel Coordinates (Rendered Colors) - Frame {t}\n"
+                            f"({len(valid_pixel_x)}/{N_basketball} visible; same (x,y) as basketball_mask [H,W])"
+                        )
+                    else:
+                        ax.set_title(
+                            f"Basketball Gaussians Projected to Image Pixel Coordinates - Frame {t}\n"
+                            f"({len(valid_pixel_x)}/{N_basketball} visible; same (x,y) as basketball_mask [H,W])"
+                        )
                     ax.grid(True, alpha=0.3)
-                    plt.colorbar(scatter, ax=ax, label="Depth (Z in Camera Space)")
+                    if rendered_colors is None:
+                        # Only show colorbar for depth coloring
+                        plt.colorbar(scatter, ax=ax, label="Depth (Z in Camera Space)")
                 else:
                     ax.text(
                         0.5,
