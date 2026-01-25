@@ -875,6 +875,7 @@ def plot_camera_space_positions(
     max_frames=None,
     frame_interval=1,
     far_depth=None,
+    cam_type=None,
 ):
     """
     Plot basketball Gaussians in camera space for each frame.
@@ -921,10 +922,12 @@ def plot_camera_space_positions(
     for t in tqdm(range(0, T, frame_interval), desc="Plotting camera space"):
         try:
             # Set timestamp
-            gaussians.set_timestamp(t, training=False)
-
-            # Get camera
-            camera = cameras[t] if t < len(cameras) else cameras[0]
+            camera = cameras[t]
+            if cam_type == "PanopticSports":
+                time_sample = camera["time"]
+            else:
+                time_sample = camera.timestamp
+            gaussians.set_timestamp(time_sample, training=False)
 
             # Get camera matrices
             if hasattr(camera, 'world_view_transform'):
@@ -1246,28 +1249,23 @@ def track_basketball_gaussians(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Get cameras
-    if cameras is None:
-        video_cameras = scene.getVideoCameras()
-        if video_cameras is None or len(video_cameras) == 0:
-            video_cameras = scene.getTestCameras()
-            if video_cameras is None or len(video_cameras) == 0:
-                video_cameras = scene.getTrainCameras()
-        cameras = video_cameras
-
+    cameras = scene.getTestCameras()
     if cameras is None or len(cameras) == 0:
-        raise ValueError("No cameras available for tracking. Check if video, test, or train cameras exist.")
+        raise ValueError("No test cameras available for tracking. Check if test cameras exist.")
 
-    max_frames = gaussians.max_frames if hasattr(gaussians, 'max_frames') and gaussians.max_frames else len(cameras)
-    max_frames = min(max_frames, len(cameras)) if cameras is not None else 0
+    max_frames = len(cameras)
 
     # Store trajectories
     trajectories = []  # List of [N_basketball, 3] positions over time
 
     print(f"Tracking basketball Gaussians across {max_frames} frames...")
     for t in tqdm(range(max_frames), desc="Tracking"):
-        # Set timestamp
-        gaussians.set_timestamp(t, training=False)
+        camera = cameras[t]
+        if cam_type == "PanopticSports":
+            time_sample = camera["time"]
+        else:
+            time_sample = camera.timestamp
+        gaussians.set_timestamp(time_sample, training=False)
 
         # Get current positions
         xyz = gaussians.get_xyz.detach().cpu().numpy()
@@ -1276,8 +1274,6 @@ def track_basketball_gaussians(
 
         # Render with colored basketball
         if save_frames and t % frame_interval == 0:
-            camera = cameras[t] if t < len(cameras) else cameras[0]
-
             # Temporarily color basketball Gaussians
             original_colors = color_basketball_gaussians(gaussians, basketball_mask, color=[1.0, 0.0, 0.0])  # Full red
 
@@ -1350,6 +1346,7 @@ def track_basketball_gaussians(
         trajectories,
         output_dir,
         frame_interval=frame_interval,
+        cam_type=cam_type,
     )
 
     print(f"Visualizations saved to {output_dir}/")
@@ -1370,6 +1367,7 @@ def identify_and_visualize_basketball(
     cam_type=None,
     sample_frame=0,
     sample_frame_2=None,
+    sample_frames=None,
 ):
     """
     Complete pipeline to identify and visualize basketball Gaussians.
@@ -1386,8 +1384,9 @@ def identify_and_visualize_basketball(
         min_contributions: Minimum pixel contributions
         basketball_color: RGB color for basketball Gaussians
         cam_type: Camera type
-        sample_frame: Frame index for first mask sample
-        sample_frame_2: If set, second frame index for two-sample identification (ignored when mask_method='load')
+        sample_frame: Frame index for first mask sample (used if sample_frames is None)
+        sample_frame_2: If set, second frame index for two-sample identification (ignored when mask_method='load' or sample_frames is provided)
+        sample_frames: List of frame indices for multi-sample identification. If provided, overrides sample_frame and sample_frame_2.
 
     Returns:
         basketball_gaussian_mask: Boolean mask [N]
@@ -1399,20 +1398,24 @@ def identify_and_visualize_basketball(
     test_cameras = scene.getTestCameras()
     print(f"Number of test cameras: {len(test_cameras)}")
     if len(test_cameras) == 0:
-        test_cameras = scene.getTrainCameras()
-        print(f"Number of train cameras: {len(test_cameras)}")
-
-    if len(test_cameras) == 0:
         raise ValueError("No cameras available for mask selection")
 
-    use_two_samples = sample_frame_2 is not None and mask_method != "load"
-    if use_two_samples:
-        indices = [
-            min(sample_frame, len(test_cameras) - 1),
-            min(sample_frame_2, len(test_cameras) - 1),
-        ]
+    # Determine sample frame indices
+    if sample_frames is not None:
+        # Use provided list of sample frames
+        indices = [min(f, len(test_cameras) - 1) for f in sample_frames]
     else:
-        indices = [min(sample_frame, len(test_cameras) - 1)]
+        # Backward compatibility: construct from sample_frame and sample_frame_2
+        if sample_frame_2 is not None and mask_method != "load":
+            indices = [
+                min(sample_frame, len(test_cameras) - 1),
+                min(sample_frame_2, len(test_cameras) - 1),
+            ]
+        else:
+            indices = [min(sample_frame, len(test_cameras) - 1)]
+
+    num_samples = len(indices)
+    use_multiple_samples = num_samples > 1
 
     samples = []
     rendered_image = None
@@ -1420,12 +1423,15 @@ def identify_and_visualize_basketball(
 
     for i, idx in enumerate(indices):
         cam = test_cameras[idx]
-        t = getattr(cam, "timestamp", idx)
+        if cam_type == "PanopticSports":
+            time_sample = cam["time"]
+        else:
+            time_sample = cam.timestamp
         if hasattr(gaussians, "set_timestamp"):
-            gaussians.set_timestamp(t, training=False)
+            gaussians.set_timestamp(time_sample, training=False)
 
-        suffix = f"_{i}" if use_two_samples else ""
-        print(f"Rendering sample {i + 1}/{len(indices)} for mask selection...")
+        suffix = f"_{i}" if use_multiple_samples else ""
+        print(f"Rendering sample {i + 1}/{num_samples} for mask selection...")
         render_pkg = render(cam, gaussians, pipeline, background, cam_type=cam_type)
         img = render_pkg["render"]
         if rendered_image is None:
@@ -1453,7 +1459,7 @@ def identify_and_visualize_basketball(
 
         samples.append((cam, mask_2d))
 
-    # Step 2: Identify basketball Gaussians (from one or two samples)
+    # Step 2: Identify basketball Gaussians (from one or more samples)
     print("Identifying basketball Gaussians...")
     basketball_gaussian_mask, contribution_map = identify_basketball_gaussians(
         gaussians,

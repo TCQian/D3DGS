@@ -83,7 +83,14 @@ def main():
         "--sample_frame_2",
         type=int,
         default=None,
-        help="Optional second frame index for two-sample basketball Gaussian identification (improves coverage across views/frames); ignored when --basketball_mask_method=load",
+        help="Optional second frame index for two-sample basketball Gaussian identification (improves coverage across views/frames); ignored when --basketball_mask_method=load or --sample_frames is provided",
+    )
+    parser.add_argument(
+        "--sample_frames",
+        type=int,
+        nargs="+",
+        default=None,
+        help="List of frame indices for multi-sample basketball Gaussian identification (e.g., --sample_frames 0 5 10 15). If provided, overrides --sample_frame and --sample_frame_2.",
     )
     parser.add_argument(
         "--render_with_colors",
@@ -136,6 +143,7 @@ def main():
     basketball_color = getattr(args, 'basketball_color', [200 / 255, 87 / 255, 83 / 255])
     sample_frame = getattr(args, 'sample_frame', 0)
     sample_frame_2 = getattr(args, 'sample_frame_2', None)
+    sample_frames = getattr(args, 'sample_frames', None)
     render_with_colors = getattr(args, 'render_with_colors', False)
     render_output_dir = getattr(args, 'render_output_dir', None)
     render_frame_interval = getattr(args, 'render_frame_interval', 10)
@@ -151,6 +159,12 @@ def main():
         print(f"Mask path: {basketball_mask_path}")
     print(f"Threshold radius: {basketball_threshold_radius}")
     print(f"Min contributions: {basketball_min_contributions}")
+    if sample_frames is not None:
+        print(f"Sample frames: {sample_frames}")
+    else:
+        print(f"Sample frame: {sample_frame}")
+        if sample_frame_2 is not None:
+            print(f"Sample frame 2: {sample_frame_2}")
     print("=" * 60 + "\n")
 
     # Initialize Gaussian model
@@ -217,6 +231,7 @@ def main():
             cam_type=cam_type,
             sample_frame=sample_frame,
             sample_frame_2=sample_frame_2,
+            sample_frames=sample_frames,
         )
 
         print(f"\n✓ Basketball tracking complete!")
