@@ -15,7 +15,6 @@ from matplotlib.patches import Circle
 from tqdm import tqdm
 
 from gaussian_renderer import render
-from utils.sh_utils import eval_sh
 
 PANOPTIC_FAR = 100.0
 
@@ -876,6 +875,8 @@ def plot_camera_space_positions(
     frame_interval=1,
     far_depth=None,
     cam_type=None,
+    pipeline=None,
+    background=None,
 ):
     """
     Plot basketball Gaussians in camera space for each frame.
@@ -919,6 +920,68 @@ def plot_camera_space_positions(
     camera_space_dir = os.path.join(output_dir, "camera_space")
     os.makedirs(camera_space_dir, exist_ok=True)
 
+    # First pass: collect all camera space positions to calculate axis limits
+    print("  Collecting camera space positions to calculate axis limits...")
+    all_cam_positions = []
+    for t in range(0, T, frame_interval):
+        try:
+            camera = cameras[t]
+            if cam_type == "PanopticSports":
+                time_sample = camera["time"]
+            else:
+                time_sample = camera.timestamp
+            gaussians.set_timestamp(time_sample, training=False)
+
+            # Get camera matrices
+            if hasattr(camera, 'world_view_transform'):
+                w2c = camera.world_view_transform
+                if not isinstance(w2c, torch.Tensor):
+                    w2c = torch.tensor(w2c, device=basketball_mask.device)
+                if w2c.device != basketball_mask.device:
+                    w2c = w2c.to(basketball_mask.device)
+            elif isinstance(camera, dict) and 'camera' in camera:
+                raster_settings = camera['camera']
+                w2c = raster_settings.viewmatrix
+            else:
+                continue
+
+            # Ensure w2c is 2D [4, 4]
+            if w2c.dim() == 3:
+                w2c = w2c.squeeze(0)
+            if isinstance(camera, dict) and 'camera' in camera:
+                w2c = w2c.T
+
+            # Get current basketball positions in world space and transform to camera space
+            xyz = gaussians.get_xyz
+            xyz_basketball = xyz[basketball_indices_torch]
+            N_basketball = xyz_basketball.shape[0]
+            xyz_h_basketball = torch.cat(
+                [xyz_basketball, torch.ones(N_basketball, 1, device=xyz_basketball.device)], dim=1
+            )
+            xyz_cam = (w2c @ xyz_h_basketball.T).T
+            xyz_cam_3d = xyz_cam[:, :3].detach().cpu().numpy()
+            all_cam_positions.append(xyz_cam_3d)
+        except Exception as e:
+            continue
+
+    # Calculate axis limits from all collected positions
+    if len(all_cam_positions) > 0:
+        all_cam_positions_array = np.concatenate(all_cam_positions, axis=0)
+        x_min, x_max = all_cam_positions_array[:, 0].min(), all_cam_positions_array[:, 0].max()
+        y_min, y_max = all_cam_positions_array[:, 1].min(), all_cam_positions_array[:, 1].max()
+        z_min, z_max = all_cam_positions_array[:, 2].min(), all_cam_positions_array[:, 2].max()
+        
+        # Add small padding to avoid clipping
+        x_pad = (x_max - x_min) * 0.05 if x_max != x_min else 0.1
+        y_pad = (y_max - y_min) * 0.05 if y_max != y_min else 0.1
+        z_pad = (z_max - z_min) * 0.05 if z_max != z_min else 0.1
+    else:
+        # Fallback if no positions collected
+        x_min = x_max = y_min = y_max = z_min = z_max = 0
+        x_pad = y_pad = z_pad = 0.1
+
+    # Second pass: plot with fixed axis limits
+    T = 230
     for t in tqdm(range(0, T, frame_interval), desc="Plotting camera space"):
         try:
             # Set timestamp
@@ -992,6 +1055,11 @@ def plot_camera_space_positions(
                 edgecolors='none',
             )
 
+            # Set fixed axis limits to see movement across frames
+            ax.set_xlim(x_min - x_pad, x_max + x_pad)
+            ax.set_ylim(y_min - y_pad, y_max + y_pad)
+            ax.set_zlim(z_min - z_pad, z_max + z_pad)
+
             ax.set_xlabel('X (Camera Space)')
             ax.set_ylabel('Y (Camera Space)')
             ax.set_zlabel('Z (Camera Space - Depth)')
@@ -1012,6 +1080,9 @@ def plot_camera_space_positions(
             scatter = ax.scatter(
                 xyz_cam_3d[:, 0], xyz_cam_3d[:, 1], c=z_values, cmap='viridis', alpha=0.6, s=20, edgecolors='none'
             )
+            # Set fixed axis limits to see movement across frames
+            ax.set_xlim(x_min - x_pad, x_max + x_pad)
+            ax.set_ylim(y_min - y_pad, y_max + y_pad)
             ax.set_xlabel('X (Camera Space)')
             ax.set_ylabel('Y (Camera Space)')
             ax.set_title(f'Basketball Gaussians 2D Projection (X-Y) - Frame {t}')
@@ -1055,56 +1126,39 @@ def plot_camera_space_positions(
                 valid_radii = radii_b[valid_mask]  # Screen-space radii in pixels
                 valid_opacities = opacity_np[valid_mask]  # Base opacity values (con_o.w in CUDA)
 
-                # Compute rendered colors for basketball Gaussians (matching render() function)
-                # Get camera center
-                if hasattr(camera, 'camera_center'):
-                    cam_center = camera.camera_center
-                    if not isinstance(cam_center, torch.Tensor):
-                        cam_center = torch.tensor(cam_center, device=basketball_mask.device)
-                    if cam_center.device != basketball_mask.device:
-                        cam_center = cam_center.to(basketball_mask.device)
-                elif isinstance(camera, dict) and 'camera' in camera:
-                    # For PanopticSports/CMU, use campos from rasterization settings
-                    raster_settings = camera['camera']
-                    if hasattr(raster_settings, 'campos'):
-                        cam_center = raster_settings.campos
-                        if not isinstance(cam_center, torch.Tensor):
-                            cam_center = torch.tensor(cam_center, device=basketball_mask.device)
-                        if cam_center.device != basketball_mask.device:
-                            cam_center = cam_center.to(basketball_mask.device)
-                    else:
-                        # Fallback: extract camera center from viewmatrix
-                        # w2c is already in original format (untransposed) after line 875
-                        # Match helpers.py: cam_center = torch.inverse(w2c)[:3, 3]
-                        w2c_inv = torch.inverse(w2c)
-                        cam_center = w2c_inv[:3, 3]
-                else:
-                    cam_center = None
-
-                # Compute rendered colors if camera center is available
+                # Compute rendered colors for basketball Gaussians by rendering and sampling from rendered image
+                # This gives the actual rendered colors that match what's displayed
                 rendered_colors = None
-                if cam_center is not None:
-                    # Get SH features for basketball Gaussians
-                    # get_features returns [N, (deg+1)^2, 3] (concatenated features_dc and features_rest)
-                    sh_features = gaussians.get_features  # [N, (deg+1)^2, 3]
-                    sh_basketball = sh_features[basketball_indices_torch]  # [N_basketball, (deg+1)^2, 3]
-
-                    # Compute direction from camera center to each Gaussian
-                    dir_pp = xyz_basketball - cam_center.unsqueeze(0)  # [N_basketball, 3]
-                    dir_pp_normalized = dir_pp / (dir_pp.norm(dim=1, keepdim=True) + 1e-7)
-
-                    # Reshape SH features to match render() function: [N, (deg+1)^2, 3] -> [N, 3, (deg+1)^2]
-                    sh_basketball_view = sh_basketball.transpose(1, 2)  # [N_basketball, 3, (deg+1)^2]
-
-                    # Evaluate SH to get RGB colors
-                    sh2rgb = eval_sh(
-                        gaussians.active_sh_degree, sh_basketball_view, dir_pp_normalized
-                    )  # [N_basketball, 3]
-
-                    # Apply same transformation as in render(): clamp_min(sh2rgb + 0.5, 0.0)
-                    # For matplotlib visualization, also clamp to [0, 1] range
-                    rendered_colors_torch = torch.clamp(sh2rgb + 0.5, 0.0, 1.0)  # [N_basketball, 3]
-                    rendered_colors = rendered_colors_torch.detach().cpu().numpy()  # [N_basketball, 3]
+                if pipeline is not None and background is not None:
+                    try:
+                        # Render the scene to get actual rendered colors
+                        render_pkg = render(camera, gaussians, pipeline, background, cam_type=cam_type)
+                        rendered_image = render_pkg["render"]  # [3, H, W]
+                        
+                        # Convert to numpy and transpose to [H, W, 3]
+                        rendered_image_np = rendered_image.detach().cpu().numpy().transpose(1, 2, 0)
+                        rendered_image_np = np.clip(rendered_image_np, 0.0, 1.0)
+                        
+                        # Sample colors from rendered image at pixel locations
+                        # valid_pixel_x and valid_pixel_y are in pixel coordinates (col, row)
+                        # Convert to integer indices and clamp to image bounds
+                        H, W = rendered_image_np.shape[:2]
+                        pixel_x_int = np.clip(valid_pixel_x.astype(int), 0, W - 1)
+                        pixel_y_int = np.clip(valid_pixel_y.astype(int), 0, H - 1)
+                        
+                        # Sample colors: rendered_image_np is [H, W, 3], pixel_y_int is row, pixel_x_int is col
+                        valid_colors = rendered_image_np[pixel_y_int, pixel_x_int]  # [N_valid, 3]
+                        
+                        # Also get colors for all basketball Gaussians (not just valid ones) for consistency
+                        all_pixel_x_int = np.clip(pixel_x.astype(int), 0, W - 1)
+                        all_pixel_y_int = np.clip(pixel_y.astype(int), 0, H - 1)
+                        rendered_colors = rendered_image_np[all_pixel_y_int, all_pixel_x_int]  # [N_basketball, 3]
+                    except Exception as e:
+                        print(f"Warning: Failed to render and sample colors: {e}.")
+                        rendered_colors = None
+                
+                # Extract valid colors for visualization
+                if rendered_colors is not None:
                     valid_colors = rendered_colors[valid_mask]  # [N_valid, 3]
 
                 fig, ax = plt.subplots(figsize=(12, 10))
@@ -1347,6 +1401,8 @@ def track_basketball_gaussians(
         output_dir,
         frame_interval=frame_interval,
         cam_type=cam_type,
+        pipeline=pipeline,
+        background=background,
     )
 
     print(f"Visualizations saved to {output_dir}/")
