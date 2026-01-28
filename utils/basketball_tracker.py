@@ -865,6 +865,213 @@ def plot_world_space_positions(trajectories, output_dir, max_points=10000):
     print(f"Saved world space plot to {world_space_path}")
 
 
+def _plot_color_evolution_over_time(
+    all_colors_over_time,
+    all_valid_masks_over_time,
+    frame_indices,
+    output_dir,
+    N_basketball,
+    max_gaussians_to_plot=20,
+):
+    """
+    Create visualizations showing how Gaussian colors evolve over time.
+
+    Args:
+        all_colors_over_time: List of [N_basketball, 3] arrays with colors (NaN for invalid)
+        all_valid_masks_over_time: List of boolean masks [N_basketball] indicating valid Gaussians
+        frame_indices: List of frame indices that were processed
+        output_dir: Directory to save plots
+        N_basketball: Total number of basketball Gaussians
+        max_gaussians_to_plot: Maximum number of individual Gaussians to plot
+    """
+    if len(all_colors_over_time) == 0:
+        return
+
+    # Convert to numpy array: [T, N_basketball, 3]
+    colors_array = np.array(all_colors_over_time)  # [T, N_basketball, 3]
+    T = colors_array.shape[0]
+    frame_indices = np.array(frame_indices)
+
+    # Find Gaussians that are valid in at least some frames
+    valid_counts = np.array([mask.sum() for mask in all_valid_masks_over_time])
+    if valid_counts.sum() == 0:
+        print("Warning: No valid Gaussians found for color evolution tracking")
+        return
+
+    # Find Gaussians that appear in at least 10% of frames
+    gaussian_valid_counts = np.sum([mask for mask in all_valid_masks_over_time], axis=0)
+    min_frames_threshold = max(1, int(T * 0.1))
+    frequently_valid_gaussians = np.where(gaussian_valid_counts >= min_frames_threshold)[0]
+
+    if len(frequently_valid_gaussians) == 0:
+        print("Warning: No Gaussians appear frequently enough for color tracking")
+        return
+
+    # Plot 1: Color strips showing actual rendered colors over time for selected Gaussians
+    num_to_plot = min(max_gaussians_to_plot, len(frequently_valid_gaussians))
+    selected_indices = np.linspace(0, len(frequently_valid_gaussians) - 1, num_to_plot, dtype=int)
+    selected_gaussians = frequently_valid_gaussians[selected_indices]
+
+    # Create color strips for each selected Gaussian
+    fig, axes = plt.subplots(num_to_plot, 1, figsize=(14, max(8, num_to_plot * 0.8)), sharex=True)
+    if num_to_plot == 1:
+        axes = [axes]
+
+    for plot_idx, g_idx in enumerate(selected_gaussians):
+        gaussian_colors = colors_array[:, g_idx, :]  # [T, 3]
+        valid_frames = ~np.isnan(gaussian_colors[:, 0])
+
+        if valid_frames.sum() > 0:
+            # Create color strip: each frame is a vertical bar with the actual color
+            color_strip = np.zeros((1, T, 3))  # [1, T, 3] for imshow
+            for t in range(T):
+                if valid_frames[t]:
+                    color_strip[0, t, :] = np.clip(gaussian_colors[t, :], 0, 1)
+                else:
+                    color_strip[0, t, :] = [0.5, 0.5, 0.5]  # Gray for invalid frames
+
+            axes[plot_idx].imshow(
+                color_strip, aspect='auto', interpolation='nearest', extent=[frame_indices[0], frame_indices[-1], 0, 1]
+            )
+            axes[plot_idx].set_ylabel(f'Gaussian {g_idx}', fontsize=10)
+            axes[plot_idx].set_yticks([])
+            axes[plot_idx].grid(True, alpha=0.3, axis='x')
+        else:
+            axes[plot_idx].text(
+                0.5,
+                0.5,
+                f'Gaussian {g_idx}: No valid frames',
+                ha='center',
+                va='center',
+                transform=axes[plot_idx].transAxes,
+            )
+            axes[plot_idx].set_ylabel(f'Gaussian {g_idx}', fontsize=10)
+            axes[plot_idx].set_yticks([])
+
+    axes[-1].set_xlabel('Frame Index', fontsize=11)
+    fig.suptitle(
+        f'Rendered Color Evolution Over Time (Selected {num_to_plot} Gaussians)', fontsize=13, fontweight='bold'
+    )
+    plt.tight_layout()
+
+    color_evolution_path = os.path.join(output_dir, "color_evolution_strips.png")
+    plt.savefig(color_evolution_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved color evolution strips to {color_evolution_path}")
+
+    # Plot 2: Mean rendered color over time (as a color strip)
+    fig, ax = plt.subplots(figsize=(14, 2))
+
+    # Calculate mean color across all valid Gaussians per frame
+    mean_colors = []
+    valid_counts_per_frame = []
+
+    for t in range(T):
+        valid_mask = all_valid_masks_over_time[t]
+        if valid_mask.sum() > 0:
+            frame_colors = colors_array[t, valid_mask, :]  # [N_valid, 3]
+            mean_colors.append(np.mean(frame_colors, axis=0))
+            valid_counts_per_frame.append(valid_mask.sum())
+        else:
+            mean_colors.append([np.nan, np.nan, np.nan])
+            valid_counts_per_frame.append(0)
+
+    mean_colors = np.array(mean_colors)  # [T, 3]
+    valid_counts_per_frame = np.array(valid_counts_per_frame)
+
+    # Create color strip showing mean color per frame
+    mean_color_strip = np.zeros((1, T, 3))  # [1, T, 3]
+    for t in range(T):
+        if not np.isnan(mean_colors[t, 0]):
+            mean_color_strip[0, t, :] = np.clip(mean_colors[t, :], 0, 1)
+        else:
+            mean_color_strip[0, t, :] = [0.5, 0.5, 0.5]  # Gray for invalid frames
+
+    ax.imshow(
+        mean_color_strip, aspect='auto', interpolation='nearest', extent=[frame_indices[0], frame_indices[-1], 0, 1]
+    )
+    ax.set_xlabel('Frame Index', fontsize=11)
+    ax.set_ylabel('Mean Color', fontsize=11)
+    ax.set_yticks([])
+    ax.set_title('Mean Rendered Color Over Time (Across All Valid Gaussians)', fontsize=12, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='x')
+    plt.tight_layout()
+
+    mean_color_path = os.path.join(output_dir, "color_evolution_mean.png")
+    plt.savefig(mean_color_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved mean color strip to {mean_color_path}")
+
+    # Plot 3: Color heatmap showing actual rendered colors (for a subset of Gaussians)
+    num_heatmap_gaussians = min(50, len(frequently_valid_gaussians))
+    heatmap_indices = np.linspace(0, len(frequently_valid_gaussians) - 1, num_heatmap_gaussians, dtype=int)
+    heatmap_gaussians = frequently_valid_gaussians[heatmap_indices]
+
+    # Create color heatmap: each row is a Gaussian, each column is a frame, showing actual colors
+    color_heatmap = np.zeros((num_heatmap_gaussians, T, 3))  # [num_heatmap_gaussians, T, 3]
+
+    for row_idx, g_idx in enumerate(heatmap_gaussians):
+        gaussian_colors = colors_array[:, g_idx, :]  # [T, 3]
+        for t in range(T):
+            if not np.isnan(gaussian_colors[t, 0]):
+                color_heatmap[row_idx, t, :] = np.clip(gaussian_colors[t, :], 0, 1)
+            else:
+                color_heatmap[row_idx, t, :] = [0.5, 0.5, 0.5]  # Gray for invalid
+
+    fig, ax = plt.subplots(figsize=(14, max(6, num_heatmap_gaussians * 0.15)))
+    ax.imshow(
+        color_heatmap,
+        aspect='auto',
+        interpolation='nearest',
+        extent=[frame_indices[0], frame_indices[-1], 0, num_heatmap_gaussians],
+    )
+    ax.set_xlabel('Frame Index', fontsize=11)
+    ax.set_ylabel('Gaussian Index', fontsize=11)
+    ax.set_title(
+        f'Rendered Color Evolution Heatmap ({num_heatmap_gaussians} Gaussians)', fontsize=12, fontweight='bold'
+    )
+    ax.set_yticks(np.arange(num_heatmap_gaussians))
+    ax.set_yticklabels([f'G{heatmap_gaussians[i]}' for i in range(num_heatmap_gaussians)], fontsize=8)
+    plt.tight_layout()
+
+    heatmap_path = os.path.join(output_dir, "color_evolution_heatmap.png")
+    plt.savefig(heatmap_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved color heatmap to {heatmap_path}")
+
+    # Plot 4: Color variance over time (how much colors change)
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    color_variances = []
+    for t in range(T):
+        valid_mask = all_valid_masks_over_time[t]
+        if valid_mask.sum() > 1:  # Need at least 2 Gaussians to compute variance
+            frame_colors = colors_array[t, valid_mask, :]  # [N_valid, 3]
+            # Compute variance in RGB space
+            variance = np.var(frame_colors, axis=0).mean()  # Average variance across channels
+            color_variances.append(variance)
+        else:
+            color_variances.append(np.nan)
+
+    color_variances = np.array(color_variances)
+    valid_variance_frames = ~np.isnan(color_variances)
+
+    if valid_variance_frames.sum() > 0:
+        ax.plot(
+            frame_indices[valid_variance_frames], color_variances[valid_variance_frames], linewidth=2, color='purple'
+        )
+        ax.set_xlabel('Frame Index', fontsize=11)
+        ax.set_ylabel('Mean Color Variance', fontsize=11)
+        ax.set_title('Color Variance Over Time (Higher = More Color Diversity)', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+
+        variance_path = os.path.join(output_dir, "color_evolution_variance.png")
+        plt.savefig(variance_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  Saved color variance plot to {variance_path}")
+
+
 def plot_camera_space_positions(
     gaussians,
     cameras,
@@ -970,7 +1177,7 @@ def plot_camera_space_positions(
         x_min, x_max = all_cam_positions_array[:, 0].min(), all_cam_positions_array[:, 0].max()
         y_min, y_max = all_cam_positions_array[:, 1].min(), all_cam_positions_array[:, 1].max()
         z_min, z_max = all_cam_positions_array[:, 2].min(), all_cam_positions_array[:, 2].max()
-        
+
         # Add small padding to avoid clipping
         x_pad = (x_max - x_min) * 0.05 if x_max != x_min else 0.1
         y_pad = (y_max - y_min) * 0.05 if y_max != y_min else 0.1
@@ -980,8 +1187,12 @@ def plot_camera_space_positions(
         x_min = x_max = y_min = y_max = z_min = z_max = 0
         x_pad = y_pad = z_pad = 0.1
 
-    # Second pass: plot with fixed axis limits
-    T = 230
+    # Initialize storage for color tracking across time
+    all_colors_over_time = []  # List of [N_basketball, 3] arrays, one per frame
+    all_valid_masks_over_time = []  # List of boolean masks indicating valid Gaussians per frame
+    frame_indices = []  # Track which frames were successfully processed
+
+    # Second pass: plot with fixed axis limits and collect colors
     for t in tqdm(range(0, T, frame_interval), desc="Plotting camera space"):
         try:
             # Set timestamp
@@ -1134,21 +1345,21 @@ def plot_camera_space_positions(
                         # Render the scene to get actual rendered colors
                         render_pkg = render(camera, gaussians, pipeline, background, cam_type=cam_type)
                         rendered_image = render_pkg["render"]  # [3, H, W]
-                        
+
                         # Convert to numpy and transpose to [H, W, 3]
                         rendered_image_np = rendered_image.detach().cpu().numpy().transpose(1, 2, 0)
                         rendered_image_np = np.clip(rendered_image_np, 0.0, 1.0)
-                        
+
                         # Sample colors from rendered image at pixel locations
                         # valid_pixel_x and valid_pixel_y are in pixel coordinates (col, row)
                         # Convert to integer indices and clamp to image bounds
                         H, W = rendered_image_np.shape[:2]
                         pixel_x_int = np.clip(valid_pixel_x.astype(int), 0, W - 1)
                         pixel_y_int = np.clip(valid_pixel_y.astype(int), 0, H - 1)
-                        
+
                         # Sample colors: rendered_image_np is [H, W, 3], pixel_y_int is row, pixel_x_int is col
                         valid_colors = rendered_image_np[pixel_y_int, pixel_x_int]  # [N_valid, 3]
-                        
+
                         # Also get colors for all basketball Gaussians (not just valid ones) for consistency
                         all_pixel_x_int = np.clip(pixel_x.astype(int), 0, W - 1)
                         all_pixel_y_int = np.clip(pixel_y.astype(int), 0, H - 1)
@@ -1156,10 +1367,25 @@ def plot_camera_space_positions(
                     except Exception as e:
                         print(f"Warning: Failed to render and sample colors: {e}.")
                         rendered_colors = None
-                
+
                 # Extract valid colors for visualization
                 if rendered_colors is not None:
                     valid_colors = rendered_colors[valid_mask]  # [N_valid, 3]
+
+                    # Store colors for temporal tracking (store all basketball Gaussians, use NaN for invalid ones)
+                    # rendered_colors already contains colors for all basketball Gaussians [N_basketball, 3]
+                    colors_frame = rendered_colors.copy()  # [N_basketball, 3]
+                    # Mark invalid Gaussians as NaN
+                    colors_frame[~valid_mask] = np.nan
+                    all_colors_over_time.append(colors_frame)
+                    all_valid_masks_over_time.append(valid_mask)
+                    frame_indices.append(t)
+                else:
+                    # Store NaN array if colors unavailable for this frame
+                    colors_frame = np.full((N_basketball, 3), np.nan)  # [N_basketball, 3]
+                    all_colors_over_time.append(colors_frame)
+                    all_valid_masks_over_time.append(np.zeros(N_basketball, dtype=bool))
+                    frame_indices.append(t)
 
                 fig, ax = plt.subplots(figsize=(12, 10))
                 if len(valid_pixel_x) > 0:
@@ -1267,6 +1493,17 @@ def plot_camera_space_positions(
             continue
 
     print(f"Saved camera space plots to {camera_space_dir}/")
+
+    # Create color evolution visualizations if we collected colors
+    if len(all_colors_over_time) > 0 and pipeline is not None and background is not None:
+        print("Creating color evolution visualizations across time...")
+        _plot_color_evolution_over_time(
+            all_colors_over_time,
+            all_valid_masks_over_time,
+            frame_indices,
+            camera_space_dir,
+            N_basketball,
+        )
 
 
 def track_basketball_gaussians(
